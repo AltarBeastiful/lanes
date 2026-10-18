@@ -53,7 +53,14 @@ class HostAdapter(Protocol):
         ...
 
     def ci_log(self, ref: str) -> str:
-        """The output of the failed CI checks on the pull request `ref`'s latest runs, as plain lines."""
+        """The output of the CI checks on the pull request `ref`'s latest runs, as plain lines.
+
+        Only the failed checks' output when any failed; every check's when none did.
+        """
+        ...
+
+    def diff(self, ref: str) -> str:
+        """The pull request `ref`'s changes against its base, as a unified diff."""
         ...
 
     def label_pull_request(self, ref: str, label: str) -> None:
