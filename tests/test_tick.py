@@ -368,6 +368,22 @@ def test_a_red_commit_already_resumed_is_left_to_the_session(world: World) -> No
     assert len(logged(world)) == 1
 
 
+def test_after_two_fix_rounds_the_pull_request_needs_a_human_and_is_not_resumed(world: World) -> None:
+    for head in ("c0ffee1", "c0ffee2"):
+        world.red_pr(head=head, log=github_log(["new failure: tests/test_calc.py::test_add"]))
+        tick()
+    world.red_pr(head="c0ffee3", log=github_log(["new failure: tests/test_calc.py::test_add"]))
+
+    result = tick()
+
+    assert result.exit_code == 0, result.output
+    # The one resume after the rounds asks a person; no third fix round is spent.
+    assert all("This is fix round" not in resume["prompt"] for resume in world.resumes()[2:])
+    assert [event["commit"] for event in logged(world) if event["event"] == "fix_round"] == ["c0ffee1", "c0ffee2"]
+    assert ["pr", "edit", "31", "--repo", "owner/repo", "--add-label", "needs-human"] in world.gh_calls()
+    assert "needs-human" in result.output
+
+
 def test_after_two_fix_rounds_the_pull_request_needs_a_human_who_is_asked_with_the_failures(world: World) -> None:
     for head in ("c0ffee1", "c0ffee2"):
         world.red_pr(head=head, log=github_log(["new failure: tests/test_calc.py::test_add"]))
@@ -387,6 +403,22 @@ def test_after_two_fix_rounds_the_pull_request_needs_a_human_who_is_asked_with_t
     ]
     assert ["pr", "edit", "31", "--repo", "owner/repo", "--add-label", "needs-human"] in world.gh_calls()
     assert "needs-human" in result.output and "asked you" in result.output
+
+
+def test_a_lane_that_needs_a_human_is_left_alone(world: World) -> None:
+    world.red_pr(log=github_log(["new failure: tests/test_calc.py::test_add"]))
+    labelled = world.load()
+    labelled["prs"][0]["labels"] = [{"name": "needs-human"}]
+    world.save(labelled)
+    tick()
+
+    result = tick()
+
+    assert result.exit_code == 0, result.output
+    # Only the one question: no fix round, and no label added or taken off.
+    assert len(world.resumes()) == 1
+    assert [event["event"] for event in logged(world)] == ["human_asked"]
+    assert not [call for call in world.gh_calls() if call[:2] == ["pr", "edit"]]
 
 
 def test_a_lane_labelled_needs_human_asks_me_once_with_its_failures_and_is_then_left_alone(world: World) -> None:
