@@ -9,7 +9,7 @@ from pathlib import Path
 from lanes import ticket
 from lanes.agents import AgentError, Agents
 from lanes.hosts import HostAdapter, HostError
-from lanes.models import Finding, FixRound, LanesConfig, PullRequest, Reviewed, Reviewer, Session
+from lanes.models import Finding, FixRound, LanesConfig, PullRequest, VerdictGiven, Reviewer, Session
 from lanes.reviewers import ReviewerError, Reviewers
 from lanes.store import LaneStore
 
@@ -32,11 +32,11 @@ def run(
     `standards` is the repository's coding standards, which every reviewer reads.
     """
     rounds: dict[str, list[FixRound]] = {}
-    verdicts: dict[str, list[Reviewed]] = {}
+    verdicts: dict[str, list[VerdictGiven]] = {}
     for event in store.events():
         if isinstance(event, FixRound):
             rounds.setdefault(event.ticket, []).append(event)
-        elif isinstance(event, Reviewed):
+        elif isinstance(event, VerdictGiven):
             verdicts.setdefault(event.ticket, []).append(event)
     lanes: dict[str, PullRequest] = {}
     # One lane is one pull request; should two close the same ticket, the older one is the lane.
@@ -67,27 +67,26 @@ class _World:
     sessions: Callable[[], list[Session]]
 
 
-def _act(pr: PullRequest, spent: list[FixRound], given: list[Reviewed], world: _World) -> str | None:
+def _act(pr: PullRequest, spent: list[FixRound], given: list[VerdictGiven], world: _World) -> str | None:
     """The control table: the first row the lane's facts match picks its one action."""
     if NEEDS_HUMAN in pr.labels:
         return None
     if pr.ci == "failed":
-        return _fix_round(
-            pr, spent, world, "CI is red", "its failures", lambda number: _red_prompt(pr, world.host.ci_log(pr.ref), number)
-        )
+        log = world.host.ci_log
+        return _fix_round(pr, spent, world, "CI is red", "its failures", lambda n: _red_prompt(pr, log(pr.ref), n))
     if pr.ci == "passed":
         return _review(pr, spent, given, world)
     return None
 
 
-def _review(pr: PullRequest, spent: list[FixRound], given: list[Reviewed], world: _World) -> str | None:
+def _review(pr: PullRequest, spent: list[FixRound], given: list[VerdictGiven], world: _World) -> str | None:
     """Run the tier's reviewers that have no verdict on the head commit yet, then resume the lane if any blocks."""
     body = world.host.read_ticket(pr.ticket)
     try:
         tier = ticket.lanes_section(body).tier
     except ValueError as error:
         return f"CI is green on #{pr.ref}, but ticket #{pr.ticket} names no tier to review it at: {error}"
-    names: list[Reviewer] = getattr(world.config.reviewers, tier)
+    names = world.config.reviewers.for_tier(tier)
     on_head = {verdict.reviewer: verdict for verdict in given if verdict.commit == pr.head}
     missing = [name for name in names if name not in on_head]
     said: list[str] = []
@@ -99,7 +98,7 @@ def _review(pr: PullRequest, spent: list[FixRound], given: list[Reviewed], world
         for name in missing:
             verdict = world.reviewers.review(name, prompt, Path(session.cwd))
             # Logged one by one, so that a reviewer failing later doesn't cost the verdicts already given.
-            on_head[name] = Reviewed(ticket=pr.ticket, reviewer=name, commit=pr.head, verdict=verdict)
+            on_head[name] = VerdictGiven(ticket=pr.ticket, reviewer=name, commit=pr.head, verdict=verdict)
             world.store.append(on_head[name])
         said.append(f"reviewed #{pr.ref} at {pr.head[:7]} with {', '.join(missing)}")
     blocking = [(name, finding) for name in names for finding in on_head[name].verdict.blocking]

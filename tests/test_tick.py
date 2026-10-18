@@ -602,3 +602,17 @@ def test_a_reviewer_that_returns_no_verdict_is_reported_and_reviews_again_next_t
     assert again.exit_code == 0, again.output
     assert [review["reviewer"] for review in world.reviews()] == ["claude-high", "codex", "codex"]
     assert [event["reviewer"] for event in logged(world)] == ["claude-high", "codex"]
+
+
+def test_codex_is_handed_the_reviewer_agents_instructions(world: World) -> None:
+    world.configure(medium=["codex"])
+    agents = world.worktree / ".claude" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "reviewer.md").write_text("---\nname: reviewer\ntools: Read\n---\n\nA finding blocks only when merging is wrong.\n")
+    world.green_pr(head="c0ffee1")
+
+    tick()
+
+    [review] = world.reviews()
+    assert review["prompt"].startswith("A finding blocks only when merging is wrong.")
+    assert "The mean of a list rounds to two places." in review["prompt"]
