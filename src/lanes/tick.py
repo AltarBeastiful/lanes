@@ -5,14 +5,14 @@ import re
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import cache
+from functools import cache, partial
 from pathlib import Path
 
 from lanes import ticket
 from lanes.agents import AgentError, Agents
 from lanes.hosts import HostAdapter, HostError, MergeConflict
 from lanes.models import (
-    Ask,
+    AskReason,
     Event,
     Finding,
     FixRound,
@@ -39,6 +39,7 @@ _GATE_PROBLEM = re.compile(
     r"|config changed without [\w-]+|suite inconclusive at \w+|skips inconclusive at \w+): "
 )
 _ERROR = re.compile(r"error|fail|traceback", re.IGNORECASE)
+# A lane's session is named `T<n>`, maybe followed by a note.
 _LANE = re.compile(r"T(\d+)(\s.*)?")
 
 
@@ -57,20 +58,18 @@ def run(
     for pr in sorted(host.pull_requests(), key=lambda pr: int(pr.ref)):
         lanes.setdefault(pr.ticket, pr)
     world = _World(host, store, agents, reviewers, config, standards, cache(agents.sessions), cache(_branch))
-    said: list[str] = []
-    for ticket, pr in lanes.items():
-        try:
-            done = _act(pr, history.get(ticket, []), world)
-        except (AgentError, HostError, ReviewerError) as error:
-            done = str(error)
-        if done:
-            said.append(f"{lane(ticket)}: {done}")
+    acts: dict[str, Callable[[], str | None]] = {
+        ticket: partial(_act, pr, history.get(ticket, []), world) for ticket, pr in lanes.items()
+    }
     # A lane that stops blocked does so before opening its pull request: only its session, named `T<n>`, leads to it.
-    unanchored = {str(int(found[1])) for session in world.sessions() if (found := _LANE.fullmatch(session.name))}
-    for ticket in sorted(unanchored - lanes.keys(), key=int):
+    named = {ticket for session in world.sessions() if (ticket := _lane_ticket(session.name))}
+    for ticket in sorted(named - lanes.keys(), key=int):
+        acts[ticket] = partial(_act_unanchored, ticket, history.get(ticket, []), world)
+    said: list[str] = []
+    for ticket, act in acts.items():
         try:
-            done = _act_unanchored(ticket, history.get(ticket, []), world)
-        except AgentError as error:
+            done = act()
+        except (AgentError, HostError, ReviewerError) as error:
             done = str(error)
         if done:
             said.append(f"{lane(ticket)}: {done}")
@@ -146,7 +145,7 @@ def _labelled(pr: PullRequest, history: list[Event], world: _World) -> str | Non
         details = _failures(world.host.ci_log(pr.ref))
     else:
         verdicts = [event for event in history if isinstance(event, VerdictGiven) and event.commit == pr.head]
-        details = _findings([(verdict.reviewer, finding) for verdict in verdicts for finding in verdict.verdict.blocking])
+        details = _findings([(given.reviewer, finding) for given in verdicts for finding in given.verdict.blocking])
     reason = f"pull request #{pr.ref} is labelled {NEEDS_HUMAN}"
     return _ask(pr.ticket, _session(pr, world), pr.head, "needs_human", reason, details, world)
 
@@ -210,9 +209,10 @@ def _rebase(pr: PullRequest, asked: list[RebaseRequested], world: _World) -> str
     if any(asked_on.commit == pr.head for asked_on in asked):
         return None
     if asked:
+        reason = f"pull request #{pr.ref} still conflicts with main at {pr.head[:7]} after its one rebase"
+        # Asked first: should the resume fail, the next tick asks again with this reason, not the label's.
+        said = _ask(pr.ticket, _session(pr, world), pr.head, "conflict", reason, [], world)
         world.host.label_pull_request(pr.ref, NEEDS_HUMAN)
-        why = f"pull request #{pr.ref} still conflicts with main at {pr.head[:7]}, after the one rebase Lanes asks for"
-        said = _ask(pr.ticket, _session(pr, world), pr.head, "conflict", why, [], world)
         return f"#{pr.ref} still conflicts with its base after a rebase, labelled #{pr.ref} {NEEDS_HUMAN}; {said}"
     session = _session(pr, world)
     if session is None:
@@ -237,9 +237,10 @@ def _fix_round(
         # A round already spent on this commit is still being worked on: the fix isn't pushed yet.
         return None
     if len(spent) >= MAX_FIX_ROUNDS:
-        world.host.label_pull_request(pr.ref, NEEDS_HUMAN)
         reason = f"{why} on #{pr.ref} after {MAX_FIX_ROUNDS} fix rounds"
+        # Asked first, as for a conflict after the rebase.
         said = _ask(pr.ticket, _session(pr, world), pr.head, "fix_rounds", reason, details(), world)
+        world.host.label_pull_request(pr.ref, NEEDS_HUMAN)
         return f"{reason}, labelled #{pr.ref} {NEEDS_HUMAN}; {said}"
     session = _session(pr, world)
     if session is None:
@@ -252,7 +253,13 @@ def _fix_round(
 
 
 def _ask(
-    ticket: str, session: Session | None, commit: str | None, why: Ask, reason: str, details: list[str], world: _World
+    ticket: str,
+    session: Session | None,
+    commit: str | None,
+    why: AskReason,
+    reason: str,
+    details: list[str],
+    world: _World,
 ) -> str:
     """Resume the lane's `session` to ask the person, with AskUserQuestion, why it needs them, so that the session
     shows Needs input; `details` are the last findings or failures."""
@@ -286,7 +293,14 @@ def lane(ticket: str) -> str:
     return f"T{ticket}"
 
 
+def _lane_ticket(name: str) -> str | None:
+    """The ticket a session named after a lane works on, or None for a session named otherwise."""
+    found = _LANE.fullmatch(name)
+    return str(int(found[1])) if found else None
+
+
 def _session(pr: PullRequest, world: _World) -> Session | None:
+    """The lane's session, also found by the pull request's branch."""
     return _session_of(pr.ticket, pr.branch, world)
 
 
@@ -303,7 +317,7 @@ def _session_of(ticket: str, branch: str | None, world: _World) -> Session | Non
     found = [
         session
         for session in sessions
-        if re.fullmatch(rf"{lane(ticket)}(\s.*)?", session.name)
+        if _lane_ticket(session.name) == ticket
         or (branch is not None and world.branch(session.cwd) == branch)
     ]
     newest = max(found, key=lambda session: session.started_at, default=None)

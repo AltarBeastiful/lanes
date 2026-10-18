@@ -59,3 +59,7 @@ _Avoid_: Surprise dependency
 **Runner**:
 The committed script through which the gates run a repository's tests and list its skipped tests; the only part of Lanes that knows a test framework.
 _Avoid_: Test adapter, test plugin
+
+**Blocked lane**:
+A lane that stopped because it needs a contract no merged code provides, saying which in an uncommitted `.lanes-blocked-on` file at the root of its worktree; it may have no pull request yet.
+_Avoid_: Stuck lane

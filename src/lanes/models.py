@@ -159,7 +159,7 @@ class RebaseRequested(_Event):
     commit: str
 
 
-Ask = Literal["blocked", "fix_rounds", "conflict", "needs_human"]
+AskReason = Literal["blocked", "fix_rounds", "conflict", "needs_human"]
 
 
 class HumanAsked(_Event):
@@ -170,7 +170,7 @@ class HumanAsked(_Event):
 
     event: Literal["human_asked"] = "human_asked"
     version: Literal[1] = 1
-    why: Ask
+    why: AskReason
     commit: str | None
 
 
