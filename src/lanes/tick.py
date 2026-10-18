@@ -1,6 +1,7 @@
 """`lanes tick`: the control table. Per lane, read the facts, pick one action, act, and move on."""
 
 import re
+import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import cache
@@ -8,8 +9,18 @@ from pathlib import Path
 
 from lanes import ticket
 from lanes.agents import AgentError, Agents
-from lanes.hosts import HostAdapter, HostError
-from lanes.models import Finding, FixRound, LanesConfig, PullRequest, VerdictGiven, Reviewer, Session
+from lanes.hosts import HostAdapter, HostError, MergeConflict
+from lanes.models import (
+    Event,
+    Finding,
+    FixRound,
+    LanesConfig,
+    PullRequest,
+    RebaseRequested,
+    Reviewer,
+    Session,
+    VerdictGiven,
+)
 from lanes.reviewers import ReviewerError, Reviewers
 from lanes.store import LaneStore
 
@@ -31,22 +42,18 @@ def run(
 
     `standards` is the repository's coding standards, which every reviewer reads.
     """
-    rounds: dict[str, list[FixRound]] = {}
-    verdicts: dict[str, list[VerdictGiven]] = {}
+    history: dict[str, list[Event]] = {}
     for event in store.events():
-        if isinstance(event, FixRound):
-            rounds.setdefault(event.ticket, []).append(event)
-        elif isinstance(event, VerdictGiven):
-            verdicts.setdefault(event.ticket, []).append(event)
+        history.setdefault(event.ticket, []).append(event)
     lanes: dict[str, PullRequest] = {}
     # One lane is one pull request; should two close the same ticket, the older one is the lane.
     for pr in sorted(host.pull_requests(), key=lambda pr: int(pr.ref)):
         lanes.setdefault(pr.ticket, pr)
-    world = _World(host, store, agents, reviewers, config, standards, cache(agents.sessions))
+    world = _World(host, store, agents, reviewers, config, standards, cache(agents.sessions), cache(_branch))
     said: list[str] = []
     for ticket, pr in lanes.items():
         try:
-            done = _act(pr, rounds.get(ticket, []), verdicts.get(ticket, []), world)
+            done = _act(pr, history.get(ticket, []), world)
         except (AgentError, HostError, ReviewerError) as error:
             done = str(error)
         if done:
@@ -65,21 +72,29 @@ class _World:
     config: LanesConfig
     standards: str
     sessions: Callable[[], list[Session]]
+    branch: Callable[[str], str | None]
 
 
-def _act(pr: PullRequest, spent: list[FixRound], given: list[VerdictGiven], world: _World) -> str | None:
+def _act(pr: PullRequest, history: list[Event], world: _World) -> str | None:
     """The control table: the first row the lane's facts match picks its one action."""
+    spent = [event for event in history if isinstance(event, FixRound)]
     if NEEDS_HUMAN in pr.labels:
         return None
+    session = _session(pr, world)
+    if session is not None and session.state == "failed":
+        # A shutdown leaves a session failed but resumable, wherever it was in its work.
+        resumed = world.agents.resume(session, "continue", lane(pr.ticket))
+        world.store.remember_session(pr.ticket, resumed)
+        return f"session {session.session_id[:8]} had failed, resumed {resumed[:8]} with continue"
     if pr.ci == "failed":
         log = world.host.ci_log
         return _fix_round(pr, spent, world, "CI is red", "its failures", lambda n: _red_prompt(pr, log(pr.ref), n))
     if pr.ci == "passed":
-        return _review(pr, spent, given, world)
+        return _review(pr, spent, history, world)
     return None
 
 
-def _review(pr: PullRequest, spent: list[FixRound], given: list[VerdictGiven], world: _World) -> str | None:
+def _review(pr: PullRequest, spent: list[FixRound], history: list[Event], world: _World) -> str | None:
     """Run the tier's reviewers that have no verdict on the head commit yet, then resume the lane if any blocks."""
     body = world.host.read_ticket(pr.ticket)
     try:
@@ -87,13 +102,15 @@ def _review(pr: PullRequest, spent: list[FixRound], given: list[VerdictGiven], w
     except ValueError as error:
         return f"CI is green on #{pr.ref}, but ticket #{pr.ticket} names no tier to review it at: {error}"
     names = world.config.reviewers.for_tier(tier)
-    on_head = {verdict.reviewer: verdict for verdict in given if verdict.commit == pr.head}
+    on_head = {
+        verdict.reviewer: verdict for verdict in history if isinstance(verdict, VerdictGiven) and verdict.commit == pr.head
+    }
     missing = [name for name in names if name not in on_head]
     said: list[str] = []
     if missing:
-        session = _session(pr.ticket, world.store, world.sessions())
+        session = _session(pr, world)
         if session is None:
-            return f"CI is green on #{pr.ref}, but no session named {lane(pr.ticket)} is left to review the worktree of"
+            return f"CI is green on #{pr.ref}, but no session of {lane(pr.ticket)} is left to review the worktree of"
         prompt = _review_prompt(pr, body, world.host.diff(pr.ref), world.host.ci_log(pr.ref), world.standards)
         for name in missing:
             verdict = world.reviewers.review(name, prompt, Path(session.cwd))
@@ -109,7 +126,41 @@ def _review(pr: PullRequest, spent: list[FixRound], given: list[VerdictGiven], w
         said += [resumed] if resumed else []
     elif missing:
         said.append("nothing blocks")
+    else:
+        return _land(pr, [event for event in history if isinstance(event, RebaseRequested)], world)
     return "; ".join(said) or None
+
+
+def _land(pr: PullRequest, asked: list[RebaseRequested], world: _World) -> str | None:
+    """A green lane nothing blocks: bring it up to date with its base, have it rebased once if they conflict, and
+    once it is up to date, ask for the person's review."""
+    try:
+        if world.host.update_branch(pr.ref):
+            return f"updated #{pr.ref} with its base"
+    except MergeConflict:
+        return _rebase(pr, asked, world)
+    if not pr.draft:
+        return None
+    # Asked first: asking again is harmless, but once out of draft the lane is never asked for again.
+    world.host.request_review(pr.ref)
+    world.host.mark_ready(pr.ref)
+    return f"#{pr.ref} is up to date and nothing blocks it, marked it ready and asked for your review"
+
+
+def _rebase(pr: PullRequest, asked: list[RebaseRequested], world: _World) -> str | None:
+    """Resume the lane to rebase, unless it already was: then it is still at it, or a person must resolve it."""
+    if any(asked_on.commit == pr.head for asked_on in asked):
+        return None
+    if asked:
+        world.host.label_pull_request(pr.ref, NEEDS_HUMAN)
+        return f"#{pr.ref} still conflicts with its base after a rebase, labelled #{pr.ref} {NEEDS_HUMAN}"
+    session = _session(pr, world)
+    if session is None:
+        return f"#{pr.ref} conflicts with its base, but no session of {lane(pr.ticket)} is left to resume"
+    resumed = world.agents.resume(session, _rebase_prompt(pr), lane(pr.ticket))
+    world.store.remember_session(pr.ticket, resumed)
+    world.store.append(RebaseRequested(ticket=pr.ticket, commit=pr.head))
+    return f"#{pr.ref} conflicts with its base, resumed {resumed[:8]} to rebase on origin/main"
 
 
 def _fix_round(
@@ -122,9 +173,9 @@ def _fix_round(
     if len(spent) >= MAX_FIX_ROUNDS:
         world.host.label_pull_request(pr.ref, NEEDS_HUMAN)
         return f"{why} on #{pr.ref} after {MAX_FIX_ROUNDS} fix rounds, labelled #{pr.ref} {NEEDS_HUMAN}"
-    session = _session(pr.ticket, world.store, world.sessions())
+    session = _session(pr, world)
     if session is None:
-        return f"{why} on #{pr.ref}, but no session named {lane(pr.ticket)} is left to resume"
+        return f"{why} on #{pr.ref}, but no session of {lane(pr.ticket)} is left to resume"
     number = len(spent) + 1
     resumed = world.agents.resume(session, prompt(number), lane(pr.ticket))
     world.store.remember_session(pr.ticket, resumed)
@@ -137,14 +188,42 @@ def lane(ticket: str) -> str:
     return f"T{ticket}"
 
 
-def _session(ticket: str, store: LaneStore, sessions: list[Session]) -> Session | None:
-    """The session the cache maps the lane to, else the newest one named after it."""
-    cached = store.session(ticket)
+def _session(pr: PullRequest, world: _World) -> Session | None:
+    """The session the cache maps the lane to, else the newest one named after it or working on its branch.
+
+    Found without the cache, the lane is remembered again, so that deleting the state directory never strands it.
+    """
+    cached = world.store.session(pr.ticket)
+    sessions = world.sessions()
     for session in sessions:
         if session.session_id == cached:
             return session
-    named = [session for session in sessions if re.fullmatch(rf"{lane(ticket)}(\s.*)?", session.name)]
-    return max(named, key=lambda session: session.started_at, default=None)
+    found = [
+        session
+        for session in sessions
+        if re.fullmatch(rf"{lane(pr.ticket)}(\s.*)?", session.name) or world.branch(session.cwd) == pr.branch
+    ]
+    newest = max(found, key=lambda session: session.started_at, default=None)
+    if newest is not None:
+        world.store.remember_session(pr.ticket, newest.session_id)
+    return newest
+
+
+def _branch(cwd: str) -> str | None:
+    """The branch checked out in `cwd`, or None when it is gone or holds no branch."""
+    try:
+        done = subprocess.run(["git", "-C", cwd, "branch", "--show-current"], capture_output=True, text=True)
+    except OSError:
+        return None
+    return done.stdout.strip() or None
+
+
+def _rebase_prompt(pr: PullRequest) -> str:
+    return (
+        f"Pull request #{pr.ref} conflicts with main at {pr.head[:7]}, so its branch can't be updated. Fetch, then "
+        "rebase on origin/main, resolve the conflicts, run the affected tests, and force-push with lease. "
+        "Stop once pushed."
+    )
 
 
 def _red_prompt(pr: PullRequest, log: str, number: int) -> str:

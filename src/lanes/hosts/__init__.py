@@ -13,6 +13,10 @@ class TicketNotFound(HostError):
     pass
 
 
+class MergeConflict(HostError):
+    """A pull request's branch conflicts with its base, so the host can't bring it up to date."""
+
+
 class HostAdapter(Protocol):
     """A ticket is named by a ref: its number, or whatever else the host says names it (a path, a URL)."""
 
@@ -65,4 +69,19 @@ class HostAdapter(Protocol):
 
     def label_pull_request(self, ref: str, label: str) -> None:
         """Put `label` on the pull request `ref`, keeping its other labels."""
+        ...
+
+    def update_branch(self, ref: str) -> bool:
+        """Bring the pull request `ref`'s branch up to date with its base; False when it already was.
+
+        Raise `MergeConflict` when the two conflict.
+        """
+        ...
+
+    def mark_ready(self, ref: str) -> None:
+        """Take the pull request `ref` out of draft, ready for review."""
+        ...
+
+    def request_review(self, ref: str) -> None:
+        """Ask the person Lanes runs for to review the pull request `ref`, so that the host notifies them."""
         ...

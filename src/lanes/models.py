@@ -150,6 +150,14 @@ class VerdictGiven(_Event):
     verdict: Verdict
 
 
+class RebaseRequested(_Event):
+    """A lane resumed to rebase on its base after the host couldn't update its branch; a lane gets one."""
+
+    event: Literal["rebase_requested"] = "rebase_requested"
+    version: Literal[1] = 1
+    commit: str
+
+
 class FailureLoggedV1(_Event):
     """A defect caught at merge, before the event carried the ticket's route and tier."""
 
@@ -168,7 +176,7 @@ class FailureLogged(_Event):
     what: str
 
 
-Event = LaneDispatched | FixRound | VerdictGiven | FailureLogged
+Event = LaneDispatched | FixRound | VerdictGiven | RebaseRequested | FailureLogged
 
 
 def _event_tag(record: Any) -> str:
@@ -182,6 +190,7 @@ LogRecord = Annotated[
     | Annotated[FixRoundV1, Tag("fix_round/1")]
     | Annotated[FixRound, Tag("fix_round/2")]
     | Annotated[VerdictGiven, Tag("verdict/1")]
+    | Annotated[RebaseRequested, Tag("rebase_requested/1")]
     | Annotated[FailureLoggedV1, Tag("failure_logged/1")]
     | Annotated[FailureLogged, Tag("failure_logged/2")],
     Discriminator(_event_tag),
@@ -205,9 +214,11 @@ class PullRequest(BaseModel):
 
     ref: str
     ticket: str
+    branch: str
     head: str
     ci: CI
     labels: list[str]
+    draft: bool
 
 
 class Session(BaseModel):
