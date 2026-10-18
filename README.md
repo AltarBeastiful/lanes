@@ -4,12 +4,18 @@ Takes a refined ticket to a reviewed, mergeable pull request, with code (never a
 
 ```bash
 uv run lanes init      # in the target repository: config, hotspots, gates, runner, agents and hooks
-uv run lanes check .scratch/<feature>/issues/01-<slug>.md
+uv run lanes check 42                      # a GitHub issue, or a markdown ticket's number or path
 uv run lanes fail 12 "missed null check"   # log a defect you caught at merge in ticket 12's lane
 uv run lanes report                        # first-pass acceptance, fix rounds and defects, per route and tier
 ```
 
 `lanes init` asks for the host, tracker, test command, lint command, N, whether Codex may read the code and the reviewers per tier. It writes `.lanes/lanes.toml`, `.lanes/hotspots.txt`, the gates and the pytest runner, the implementer and reviewer agents in `.claude/agents/` and their hooks in `.lanes/hooks/`, registers the repository in `~/.config/lanes/repos.toml`, and warns if Claude Code's workspace trust hasn't been accepted for it. It refuses a test command other than pytest. Commit what it wrote under the `allow-config` label, then turn on branch protection requiring `gates` and an up-to-date branch by hand.
+
+## Tickets
+
+`lanes check` reads the ticket from the tracker `.lanes/lanes.toml` names: a GitHub issue through the `gh` CLI, or, with `tracker = "markdown"` or no config, a file under `.scratch/<feature>/issues/`. A ticket that passes gets the `ready-for-agent` label; on a markdown ticket that is its `**Status:**` line. Blocking edges come from GitHub's native issue dependencies, or a markdown ticket's `**Blocked by:**` line or `## Blocked by` section.
+
+Both trackers sit behind the `HostAdapter` port, and `tests/test_host_contract.py` holds them to one contract. It runs against markdown always. To run it against GitHub too, point it at a throwaway repository with the `needs-triage` and `ready-for-agent` labels, where it creates and closes issues: `LANES_GITHUB_SANDBOX=owner/repo uv run pytest tests/test_host_contract.py`.
 
 ## Event log
 

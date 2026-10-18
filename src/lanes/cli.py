@@ -2,20 +2,32 @@
 
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Any, get_args
 
 import click
 
 from lanes import agents, install, registry, report as reports, ticket
-from lanes.hosts import HostAdapter, TicketNotFound
+from lanes.hosts import HostAdapter, HostError
+from lanes.hosts.github import GitHubHost
 from lanes.hosts.markdown import MarkdownHost
 from lanes.models import FailureLogged, Host, LanesConfig, Reviewer, TierReviewers, Tracker
 from lanes.store import LaneStore
 from lanes.store.files import FileStore, state_directory
 
 
+READY = "ready-for-agent"
+
+
 def _host() -> HostAdapter:
+    """The tracker `.lanes/lanes.toml` names; markdown tickets under the working directory without one."""
+    root = _git_root_or_none()
+    config = root / ".lanes" / "lanes.toml" if root else None
+    if config and config.is_file():
+        tracker = LanesConfig.model_validate(tomllib.loads(config.read_text(encoding="utf-8"))).tracker
+        if tracker == "github":
+            return GitHubHost()
     return MarkdownHost(Path.cwd())
 
 
@@ -31,18 +43,19 @@ def main() -> None:
 @main.command()
 @click.argument("ref")
 def check(ref: str) -> None:
-    """Accept or reject the ticket REF as ready for a lane."""
+    """Accept or reject the ticket REF as ready for a lane; a ticket that passes gets the ready-for-agent label."""
+    host = _host()
     try:
-        body = _host().read_ticket(ref)
-    except TicketNotFound as error:
+        found = ticket.problems(host.read_ticket(ref))
+        for problem in found:
+            click.echo(f"{ref}: {problem}")
+        if found:
+            sys.exit(1)
+        host.add_label(ref, READY)
+    except HostError as error:
         click.echo(f"{ref}: {error}", err=True)
         sys.exit(2)
-    found = ticket.problems(body)
-    for problem in found:
-        click.echo(f"{ref}: {problem}")
-    if found:
-        sys.exit(1)
-    click.echo(f"{ref}: ok")
+    click.echo(f"{ref}: ok, labelled {READY}")
 
 
 @main.command()
@@ -52,7 +65,7 @@ def fail(ref: str, what: str) -> None:
     """Log WHAT, a defect caught at merge in the lane for ticket REF."""
     try:
         section = ticket.lanes_section(_host().read_ticket(ref))
-    except (TicketNotFound, ValueError) as error:
+    except (HostError, ValueError) as error:
         click.echo(f"{ref}: {error}", err=True)
         sys.exit(2)
     _store().append(FailureLogged(ticket=ref, route=section.route, tier=section.tier, what=what))
@@ -125,12 +138,17 @@ def init(force: bool) -> None:
 
 
 def _git_root() -> Path:
-    found = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
-    if found.returncode != 0:
+    root = _git_root_or_none()
+    if root is None:
         command = click.get_current_context().info_name
         click.echo(f"lanes {command}: not a git repository; run it inside the repository", err=True)
         sys.exit(2)
-    return Path(found.stdout.strip()).resolve()
+    return root
+
+
+def _git_root_or_none() -> Path | None:
+    found = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
+    return Path(found.stdout.strip()).resolve() if found.returncode == 0 else None
 
 
 def _choice(literal: Any) -> click.Choice[str]:

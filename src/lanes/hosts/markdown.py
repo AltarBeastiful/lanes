@@ -1,8 +1,20 @@
 """Offline host: one markdown file per ticket under `.scratch/<feature>/issues/`."""
 
+import re
 from pathlib import Path
 
 from lanes.hosts import TicketNotFound
+
+# `**Blocked by:** 01, 02` near the top, or a `## Blocked by` section listing them.
+_BLOCKED_LINE = re.compile(r"^\**Blocked by:\**[ \t]*(.*)$", re.MULTILINE | re.IGNORECASE)
+_BLOCKED_SECTION = re.compile(r"^#{2,6} +Blocked by\s*:?[ \t]*$(.*?)(?=^#{1,6} |\Z)", re.MULTILINE | re.DOTALL | re.IGNORECASE)
+# The triage state, as in the local tracker convention: `**Status:** ready-for-agent`, comma-separated here.
+_STATUS_LINE = re.compile(r"^(\**Status:\**)[ \t]*(.*)$", re.MULTILINE | re.IGNORECASE)
+_TITLE_LINE = re.compile(r"^# .*\n", re.MULTILINE)
+# Comments follow the ticket, each after this marker, and are not part of what `read_ticket` returns.
+_COMMENT = "\n\n<!-- lanes:comment -->\n"
+# Each blocker leads with its number; "None (can start immediately)" names none.
+_BLOCKER = re.compile(r"(?:^|,)[ \t\-*]*#?(\d+)", re.MULTILINE)
 
 
 class MarkdownHost:
@@ -11,10 +23,48 @@ class MarkdownHost:
 
     def read_ticket(self, ref: str) -> str:
         """Read a ticket by its path, or by its number (`1`, `01`) when that is unambiguous."""
+        return self._parts(ref)[0]
+
+    def blocked_by(self, ref: str) -> list[str]:
+        body = self.read_ticket(ref)
+        listed = "\n".join(match.group(1) for pattern in (_BLOCKED_LINE, _BLOCKED_SECTION) for match in pattern.finditer(body))
+        return [str(int(number)) for number in _BLOCKER.findall(listed)]
+
+    def labels(self, ref: str) -> list[str]:
+        status = _STATUS_LINE.search(self.read_ticket(ref))
+        return [label.strip() for label in status.group(2).split(",") if label.strip()] if status else []
+
+    def add_label(self, ref: str, label: str) -> None:
+        labels = self.labels(ref)
+        if label in labels:
+            return
+        path = self._path(ref)
+        body = path.read_text(encoding="utf-8")
+        value = ", ".join([*labels, label])
+        status = _STATUS_LINE.search(body, 0, len(self._parts(ref)[0]))
+        if status:
+            body = body[: status.start()] + f"{status.group(1)} {value}" + body[status.end() :]
+        else:
+            # A ticket without a Status line gets one under its title, as the local template places it.
+            title = _TITLE_LINE.search(body)
+            at = title.end() if title else 0
+            body = body[:at] + ("\n" if title else "") + f"**Status:** {value}\n\n" + body[at:].lstrip("\n")
+        path.write_text(body, encoding="utf-8")
+
+    def comment(self, ref: str, text: str) -> None:
+        with self._path(ref).open("a", encoding="utf-8") as ticket:
+            ticket.write(f"{_COMMENT}{text}\n")
+
+    def comments(self, ref: str) -> list[str]:
+        return [text.removesuffix("\n") for text in self._parts(ref)[1:]]
+
+    def _parts(self, ref: str) -> list[str]:
+        """The ticket file split into the ticket itself and each comment after it."""
+        return self._path(ref).read_text(encoding="utf-8").split(_COMMENT)
+
+    def _path(self, ref: str) -> Path:
         path = self._root / ref
-        if not path.is_file():
-            path = self._find_by_number(ref)
-        return path.read_text(encoding="utf-8")
+        return path if path.is_file() else self._find_by_number(ref)
 
     def _find_by_number(self, ref: str) -> Path:
         if not ref.isdigit():
