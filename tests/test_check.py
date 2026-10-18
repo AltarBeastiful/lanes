@@ -141,11 +141,11 @@ def test_non_ascii_ticket_is_read(check: Check) -> None:
     assert result.exit_code == 0, result.output
 
 
-def test_passing_ticket_is_marked_ready_for_agent(check: Check, tmp_path: Path) -> None:
+def test_passing_ticket_leaves_triage_for_ready_for_agent(check: Check, tmp_path: Path) -> None:
     result = check(ticket().replace("ready-for-agent", "needs-triage"))
 
     assert result.exit_code == 0, result.output
-    assert "**Status:** needs-triage, ready-for-agent" in (tmp_path / ".scratch/feature/issues/01-a-ticket.md").read_text()
+    assert "**Status:** ready-for-agent\n" in (tmp_path / ".scratch/feature/issues/01-a-ticket.md").read_text()
 
 
 def test_failing_ticket_is_not_marked_ready_for_agent(check: Check, tmp_path: Path) -> None:
@@ -162,7 +162,7 @@ with open(os.environ["FAKE_GH_LOG"], "a") as log:
 if sys.argv[1:3] == ["repo", "view"]:
     print("owner/repo")
 elif sys.argv[1:3] == ["issue", "view"]:
-    print(json.dumps({"body": os.environ["FAKE_GH_BODY"], "labels": []}))
+    print(json.dumps({"body": os.environ["FAKE_GH_BODY"], "labels": [{"name": "needs-triage"}, {"name": "bug"}]}))
 """
 
 
@@ -201,3 +201,5 @@ def test_github_issue_that_passes_gets_ready_for_agent(tmp_path: Path, monkeypat
     assert result.exit_code == 0, result.output
     calls = [json.loads(line) for line in log.read_text().splitlines()]
     assert ["issue", "edit", "42", "--repo", "owner/repo", "--add-label", "ready-for-agent"] in calls
+    assert ["issue", "edit", "42", "--repo", "owner/repo", "--remove-label", "needs-triage"] in calls
+    assert not [call for call in calls if "bug" in call]

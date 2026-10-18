@@ -34,6 +34,10 @@ class HostAdapter(Protocol):
         """Put `label` on the ticket `ref`, keeping its other labels; a label it already has stays once."""
         ...
 
+    def remove_label(self, ref: str, label: str) -> None:
+        """Take `label` off the ticket `ref`, keeping its other labels; a label it doesn't have is no error."""
+        ...
+
     def comment(self, ref: str, text: str) -> None:
         """Add `text` as a comment on the ticket `ref`."""
         ...

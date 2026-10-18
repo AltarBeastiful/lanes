@@ -46,6 +46,12 @@ class GitHubHost:
             self._gh("label", "create", label, "--repo", repo)
             self._gh("issue", "edit", number, "--repo", repo, "--add-label", label)
 
+    def remove_label(self, ref: str, label: str) -> None:
+        # gh refuses to remove a label the repository doesn't have, so only remove one the issue carries.
+        if label in self.labels(ref):
+            repo, number = self._locate(ref)
+            self._gh("issue", "edit", number, "--repo", repo, "--remove-label", label)
+
     def comment(self, ref: str, text: str) -> None:
         repo, number = self._locate(ref)
         self._gh("issue", "comment", number, "--repo", repo, "--body-file", "-", stdin=text)

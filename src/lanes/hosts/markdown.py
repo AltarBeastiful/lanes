@@ -36,11 +36,18 @@ class MarkdownHost:
 
     def add_label(self, ref: str, label: str) -> None:
         labels = self.labels(ref)
+        if label not in labels:
+            self._write_labels(ref, [*labels, label])
+
+    def remove_label(self, ref: str, label: str) -> None:
+        labels = self.labels(ref)
         if label in labels:
-            return
+            self._write_labels(ref, [kept for kept in labels if kept != label])
+
+    def _write_labels(self, ref: str, labels: list[str]) -> None:
         path = self._path(ref)
         body = path.read_text(encoding="utf-8")
-        value = ", ".join([*labels, label])
+        value = ", ".join(labels)
         status = _STATUS_LINE.search(body, 0, len(self._parts(ref)[0]))
         if status:
             body = body[: status.start()] + f"{status.group(1)} {value}" + body[status.end() :]

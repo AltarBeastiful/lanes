@@ -18,6 +18,8 @@ from lanes.store.files import FileStore, state_directory
 
 
 READY = "ready-for-agent"
+# The triage states a ticket leaves when it passes; ready-for-human and wontfix are a person's call and stay.
+TRIAGE = ("needs-triage", "needs-info")
 
 
 def _host() -> HostAdapter:
@@ -43,7 +45,7 @@ def main() -> None:
 @main.command()
 @click.argument("ref")
 def check(ref: str) -> None:
-    """Accept or reject the ticket REF as ready for a lane; a ticket that passes gets the ready-for-agent label."""
+    """Accept or reject the ticket REF as ready for a lane; a ticket that passes goes from triage to ready-for-agent."""
     host = _host()
     try:
         found = ticket.problems(host.read_ticket(ref))
@@ -52,6 +54,8 @@ def check(ref: str) -> None:
         if found:
             sys.exit(1)
         host.add_label(ref, READY)
+        for label in TRIAGE:
+            host.remove_label(ref, label)
     except HostError as error:
         click.echo(f"{ref}: {error}", err=True)
         sys.exit(2)

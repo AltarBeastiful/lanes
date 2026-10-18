@@ -13,7 +13,7 @@ uv run lanes report                        # first-pass acceptance, fix rounds a
 
 ## Tickets
 
-`lanes check` reads the ticket from the tracker `.lanes/lanes.toml` names: a GitHub issue through the `gh` CLI, or, with `tracker = "markdown"` or no config, a file under `.scratch/<feature>/issues/`. A ticket that passes gets the `ready-for-agent` label; on a markdown ticket that is its `**Status:**` line. Blocking edges come from GitHub's native issue dependencies, or a markdown ticket's `**Blocked by:**` line or `## Blocked by` section.
+`lanes check` reads the ticket from the tracker `.lanes/lanes.toml` names: a GitHub issue through the `gh` CLI, or, with `tracker = "markdown"` or no config, a file under `.scratch/<feature>/issues/`. A ticket that passes goes from triage to ready: it gets the `ready-for-agent` label and loses `needs-triage` and `needs-info`, while `ready-for-human` and `wontfix` stay. On a markdown ticket, labels are its comma-separated `**Status:**` line. Blocking edges come from GitHub's native issue dependencies, or a markdown ticket's `**Blocked by:**` line or `## Blocked by` section.
 
 Both trackers sit behind the `HostAdapter` port, and `tests/test_host_contract.py` holds them to one contract. It runs against markdown always. To run it against GitHub too, point it at a throwaway repository with the `needs-triage` and `ready-for-agent` labels, where it creates and closes issues: `LANES_GITHUB_SANDBOX=owner/repo uv run pytest tests/test_host_contract.py`.
 

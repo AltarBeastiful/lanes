@@ -157,3 +157,12 @@ def test_a_label_the_host_has_never_seen_is_added(host: HostAdapter, writer: Tic
     host.add_label(ref, label)
 
     assert host.labels(ref) == [label]
+
+
+def test_a_removed_label_leaves_the_others(host: HostAdapter, writer: TicketWriter) -> None:
+    ref = writer.new_ticket("Something.\n", labels=["needs-triage", "ready-for-agent"])
+
+    host.remove_label(ref, "needs-triage")
+    host.remove_label(ref, "needs-triage")
+
+    assert host.labels(ref) == ["ready-for-agent"]
