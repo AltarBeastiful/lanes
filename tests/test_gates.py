@@ -50,10 +50,12 @@ def build_fixture(repo: Path) -> None:
         commit_all(repo, branch.name)
 
 
-def run_gate(repo: Path, labels: Sequence[str] = (), env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
+def run_gate(
+    repo: Path, labels: Sequence[str] = (), body: str = "", env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess[str]:
     path = os.pathsep.join([str(Path(sys.executable).parent), os.environ["PATH"]])
     return subprocess.run(
-        [sys.executable, ".lanes/gates.py", "--base", "main", "--labels", ",".join(labels)],
+        [sys.executable, ".lanes/gates.py", "--base", "main", "--labels", ",".join(labels), f"--body={body}"],
         cwd=repo,
         capture_output=True,
         text=True,
@@ -70,9 +72,9 @@ def fixture_repo(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 @pytest.fixture
 def gate(fixture_repo: Path) -> Gate:
-    def run(branch: str, labels: Sequence[str] = ()) -> subprocess.CompletedProcess[str]:
+    def run(branch: str, labels: Sequence[str] = (), body: str = "") -> subprocess.CompletedProcess[str]:
         git(fixture_repo, "checkout", "-q", branch)
-        return run_gate(fixture_repo, labels)
+        return run_gate(fixture_repo, labels, body)
 
     return run
 
@@ -128,6 +130,49 @@ def test_new_failure_fails_the_gate_but_one_already_failing_on_the_base_does_not
     assert result.returncode == 1, result.stdout + result.stderr
     assert "new failure: tests/test_calc.py::test_add" in result.stdout
     assert "test_mean_of_nothing_is_zero" not in result.stdout
+
+
+def test_new_test_that_passes_on_the_base_fails_the_gate(gate: Gate) -> None:
+    result = gate("adds-passing-test")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "vacuous test, passes on base: tests/test_more.py::test_add_zero" in result.stdout
+
+
+def test_new_test_that_fails_on_the_base_by_assertion_passes(gate: Gate) -> None:
+    result = gate("rounds-mean")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "test_mean_rounds_to_two_places" not in result.stdout
+
+
+def test_new_test_that_cannot_import_on_the_base_is_inconclusive_not_failed(gate: Gate) -> None:
+    result = gate("adds-power")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "inconclusive on base, for the reviewer: tests/test_power.py::test_power (runner run exited 2)" in result.stdout
+
+
+def test_test_that_cannot_import_on_the_base_does_not_hide_a_vacuous_one(gate: Gate) -> None:
+    result = gate("hides-passing-test")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "vacuous test, passes on base: tests/test_more.py::test_add_zero" in result.stdout
+    assert "inconclusive on base, for the reviewer: tests/test_power.py::test_power (runner run exited 2)" in result.stdout
+
+
+def test_preserved_test_the_base_already_had_must_pass_on_both(gate: Gate) -> None:
+    result = gate("clean", body="behaviour: preserved tests/test_calc.py::test_mean_of_nothing_is_zero")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "preserved test does not pass on base: tests/test_calc.py::test_mean_of_nothing_is_zero" in result.stdout
+    assert "preserved test does not pass on head: tests/test_calc.py::test_mean_of_nothing_is_zero" in result.stdout
+
+
+def test_new_test_that_passes_on_the_base_passes_when_declared_preserved(gate: Gate) -> None:
+    result = gate("adds-passing-test", body="behaviour: preserved tests/test_more.py::test_add_zero")
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_preserved_test_that_fails_on_the_base_fails_the_gate(gate: Gate) -> None:
+    result = gate("floors-divide", body="Refactor.\n\nbehaviour: preserved `tests/test_more.py::test_divide_is_whole`\n")
+    assert result.returncode == 1, result.stdout + result.stderr
+    assert "preserved test does not pass on base: tests/test_more.py::test_divide_is_whole" in result.stdout
 
 
 FAKE_RUNNER = """#!/bin/sh

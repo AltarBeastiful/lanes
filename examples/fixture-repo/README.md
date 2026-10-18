@@ -12,5 +12,10 @@ Seeded cases the gates must catch, plus one clean branch they must pass. The har
 | `skips-without-fixture` | adds a test that skips when its gitignored fixture is missing | fails |
 | `edits-lint-config` | raises ruff's line length | fails without `allow-config`, passes with it |
 | `breaks-add` | breaks `add`, a new failure | fails |
+| `adds-passing-test` | adds a test that already passes on `main` | fails, passes with it declared `behaviour: preserved` |
+| `rounds-mean` | rounds `mean` and adds a test that fails on `main` by assertion | passes |
+| `adds-power` | adds `power` and a test that can't import it on `main` | passes, reported inconclusive |
+| `hides-passing-test` | combines `adds-power` and `adds-passing-test`: one file's import error must not hide the other's vacuous test | fails |
+| `floors-divide` | floors `divide` with a test declared `behaviour: preserved` that fails on `main` | fails |
 
-`test_mean_of_nothing_is_zero` already fails on `main`, so every branch, `clean` included, keeps one failure that must not count.
+Pull request bodies are passed by `tests/test_gates.py`. `test_mean_of_nothing_is_zero` already fails on `main`, so every branch, `clean` included, keeps one failure that must not count.

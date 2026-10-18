@@ -5,7 +5,7 @@ permissions:
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, labeled, unlabeled]
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
 
 jobs:
   gates:
@@ -21,4 +21,5 @@ jobs:
         env:
           BASE: ${{ github.event.pull_request.base.sha }}
           LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-        run: uv run python .lanes/gates.py --base "$BASE" --labels "$LABELS"
+          BODY: ${{ github.event.pull_request.body }}
+        run: uv run python .lanes/gates.py --base "$BASE" --labels "$LABELS" --body="$BODY"
