@@ -14,7 +14,6 @@ from typing import Any
 import pytest
 from click.testing import CliRunner, Result
 
-from lanes import lock
 from lanes.cli import main
 from lanes.models import Verdict
 
@@ -983,6 +982,9 @@ def test_one_failing_repository_does_not_stop_the_others(
 
 @pytest.mark.parametrize("command", [["tick"], ["tick", "--all"]])
 def test_a_tick_while_another_holds_the_repository_exits_without_acting(world: World, command: list[str]) -> None:
+    # Imported here so that, on a base without the lock, only this test fails to run.
+    from lanes import lock
+
     register(world, world.repo)
     world.red_pr(log=github_log(["new failure: tests/test_calc.py::test_add"]))
 
