@@ -11,6 +11,11 @@ test_command = {{ config.test_command | toml }}
 # What the implementer's quick checks run as lint before a lane stops; empty for none.
 lint_command = {{ config.lint_command | toml }}
 
+# A shell command tick runs as well whenever a lane asks you something, with
+# $LANES_LANE and $LANES_MESSAGE set; empty for none. Claude Code's own
+# notifications and Remote Control carry the question either way.
+notify_cmd = {{ config.notify_cmd | toml }}
+
 # At most this many lanes run at once in this repository.
 max_lanes = {{ config.max_lanes | toml }}
 

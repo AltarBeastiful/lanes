@@ -26,16 +26,35 @@ Both trackers sit behind the `HostAdapter` port, and `tests/test_host_contract.p
 
 `lanes tick` reads each lane's facts from the pull request host and agent view and acts on it at most once. A lane is an open pull request whose body carries `Closes #<n>`; its session is the one the state directory's cache maps it to, else the newest session named `T<n>` or whose working directory has the pull request's branch checked out, which the cache then remembers, so a deleted state directory strands no lane. So far the control table has these rows:
 
+- The lane's session wrote `.lanes-blocked-on` at the root of its worktree: ask you (below) once per head commit, and otherwise leave the lane alone. A lane usually stops blocked before opening its pull request, so a session named `T<n>` whose ticket has no open pull request is a lane too, for this row only.
 - The lane's session `failed`, as a shutdown leaves it: resume it with `continue`, whatever its CI says.
 - CI red on a commit no fix round was spent on, fewer than two rounds spent: resume the session in the background with `--name T<n>` and a prompt of at most 200 lines, the gates' problem lines (failing tests among them) first, then the first error lines from the failed job's log. Log a `fix_round` event carrying the commit. When the resume starts a copy under a new session ID, the cache maps the lane to the copy.
-- CI red after two fix rounds: label the pull request `needs-human` and resume nothing more.
+- CI red after two fix rounds: label the pull request `needs-human` and ask you, with the gates' problems and CI's first error lines.
 - CI red on a commit a round was already spent on: wait for the session to push.
 - CI green on a commit some of the tier's reviewers have no verdict on: run those reviewers, one after another, in the session's working directory, and log a `verdict` event per reviewer and commit, so no commit is reviewed twice by the same reviewer. Each reviewer gets the ticket, the pull request's diff, the CI log and `CODING_STANDARDS.md` on stdin, in a fresh read-only session that never sees the lane's transcript: `codex exec --sandbox read-only --output-schema`, handed `.claude/agents/reviewer.md`'s instructions, or `claude -p --agent reviewer --json-schema` with `--effort high` or `max`, its verdict read from `structured_output`. `claude-adversarial`, the second reviewer where Codex may not read the code, is `claude-high` with an adversarial system prompt. The schema both fill is generated from the `Verdict` model.
-- CI green with a blocking finding among the tier's verdicts on the head commit: a fix round as for red CI, with every blocking finding as the prompt and the same two-round limit. Nits never resume the lane.
+- CI green with a blocking finding among the tier's verdicts on the head commit: a fix round as for red CI, with every blocking finding as the prompt and the same two-round limit, after which you are asked with the findings. Nits never resume the lane.
 - CI green with every verdict in and nothing blocking, the branch behind its base: `gh pr update-branch`, with no agent involved.
-- The same, but the branch conflicts with its base: resume the session once to rebase on `origin/main`, and log a `rebase_requested` event carrying the commit. Still conflicting on a later commit, label the pull request `needs-human`.
+- The same, but the branch conflicts with its base: resume the session once to rebase on `origin/main`, and log a `rebase_requested` event carrying the commit. Still conflicting on a later commit, label the pull request `needs-human` and ask you.
 - The same, up to date and still a draft: mark it ready for review and ask for your review. GitHub refuses a review request from a pull request's author, so when you wrote it, as lanes running under your `gh` login do, it is assigned to you instead.
-- Anything else, or a pull request already labelled `needs-human`: leave the lane alone.
+- A pull request labelled `needs-human` by anyone but `tick`: ask you once, with CI's failures or the blocking findings on its head commit. Once a lane has asked, it is left alone, even when someone pushes to it.
+- Anything else: leave the lane alone.
+
+### Bringing you in
+
+To ask you, `tick` resumes the lane's own session with a fixed prompt that tells it to ask you with AskUserQuestion, giving the reason (blocked, fix rounds spent, conflict after the rebase, or labelled `needs-human`) and the last findings or failures, and to stop. The session then shows Needs input, and Claude Code's notifications and Remote Control carry the question; you answer in the session. A `human_asked` event carrying the reason and head commit keeps the same case from being asked again. When `notify_cmd` in `.lanes/lanes.toml` is set (it is empty by default), `tick` also runs it through the shell with `$LANES_LANE` and `$LANES_MESSAGE` set, and reports it if it fails. Lanes never deletes a `needs-human` lane, its branch or its worktree, so uncommitted work in it is never lost.
+
+#### Manual check: Remote Control shows the question as Needs input
+
+Remote Control is a phone or browser view of your sessions, so this is checked by hand. In a trusted throwaway repository with Remote Control on:
+
+```bash
+claude --bg --name T0-ask-check "Say hello, then stop."
+claude agents --json --all          # note the full sessionId of T0-ask-check once it is done
+claude --resume <full session id> --bg --name T0-ask-check \
+  "Lanes needs a person in lane T0: this is a check of the ask prompt. Ask me with AskUserQuestion whether the check worked, offering yes and no. Then stop."
+```
+
+Agent view should list `T0-ask-check` as needing input, a Claude Code notification should fire, and Remote Control should show the session as Needs input with the question; answering there should reach the session. Not checked yet.
 
 CI is the newest run of each check on the head commit, so a failed run that a re-run has passed no longer counts. Sessions are resumed by their full session ID, from their own working directory.
 
