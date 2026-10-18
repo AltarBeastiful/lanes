@@ -1,0 +1,13 @@
+# Files whose edits are likely to collide between lanes, one glob per line.
+# Seeded by `lanes init`: add your route tables, registries, DI containers and
+# any file that caused a past conflict.
+uv.lock
+poetry.lock
+Pipfile.lock
+requirements*.txt
+pyproject.toml
+package-lock.json
+pnpm-lock.yaml
+yarn.lock
+**/migrations/**
+**/locale/**

@@ -234,6 +234,13 @@ def test_runner_that_cannot_run_the_base_fails_the_gate(tmp_path: Path) -> None:
     assert "suite inconclusive at base: runner run exited 3" in result.stdout
 
 
-@pytest.mark.parametrize(("installed", "template"), [(".lanes/gates.py", "gates/gates.py"), (".lanes/runner", "runner/pytest")])
+@pytest.mark.parametrize(
+    ("installed", "template"),
+    [
+        (".lanes/gates.py", "gates/gates.py"),
+        (".lanes/runner", "runner/pytest"),
+        (".github/workflows/gates.yml", "gates/gates.yml"),
+    ],
+)
 def test_lanes_runs_the_gates_it_ships(installed: str, template: str) -> None:
     assert (ROOT / installed).read_bytes() == (TEMPLATES / template).read_bytes()

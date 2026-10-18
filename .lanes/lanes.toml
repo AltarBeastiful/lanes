@@ -1,0 +1,23 @@
+# Lanes configuration, written by `lanes init`. Changing it needs the allow-config label.
+
+# Where pull requests live, and where tickets live.
+host = "github"
+tracker = "github"
+
+# How this repository runs its tests. The gates don't run this command: they run
+# the whole suite through .lanes/runner.
+test_command = "uv run pytest"
+
+# At most this many lanes run at once in this repository.
+max_lanes = 2
+
+# Whether Codex may read this repository's code. When false, Claude with an
+# adversarial prompt takes Codex's place as second reviewer.
+codex_allowed = false
+
+# Who reviews each tier once CI is green; an empty list means CI only.
+[reviewers]
+trivial = []
+small = ["claude-adversarial"]
+medium = ["claude-adversarial", "claude-high"]
+high = ["claude-adversarial", "claude-max"]
