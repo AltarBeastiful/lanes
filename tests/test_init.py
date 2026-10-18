@@ -1,7 +1,10 @@
 """Seam 1: `lanes init` driven through the CLI against a temporary repository and home."""
 
 import json
+import os
+import shlex
 import subprocess
+import sys
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
@@ -26,6 +29,13 @@ def answers(**changed: str) -> str:
     return "".join(f"{given[name]}\n" for name in order)
 
 
+# Logs each call, and exits with $FAKE_SYSTEMCTL_EXIT, 0 when unset.
+FAKE_SYSTEMCTL = """#!/bin/sh
+echo "$*" >> "$FAKE_SYSTEMCTL_LOG"
+exit "${FAKE_SYSTEMCTL_EXIT:-0}"
+"""
+
+
 @pytest.fixture
 def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     home = tmp_path / "home"
@@ -33,7 +43,18 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    bin = tmp_path / "bin"
+    bin.mkdir()
+    (bin / "systemctl").write_text(FAKE_SYSTEMCTL)
+    (bin / "systemctl").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_SYSTEMCTL_LOG", str(tmp_path / "systemctl.log"))
     return home
+
+
+def systemctl_calls(home: Path) -> list[str]:
+    log = home.parent / "systemctl.log"
+    return log.read_text().splitlines() if log.exists() else []
 
 
 @pytest.fixture
@@ -283,3 +304,54 @@ def test_init_run_again_with_the_same_answers_succeeds(repo: Path, init: Init) -
     result = init()
 
     assert result.exit_code == 0, result.output
+
+
+def unit(home: Path, name: str) -> str:
+    return (home / ".config" / "systemd" / "user" / name).read_text()
+
+
+def test_init_writes_and_enables_a_timer_that_ticks_every_repository_every_10_minutes(home: Path, init: Init) -> None:
+    result = init()
+
+    assert result.exit_code == 0, result.output
+    timer = unit(home, "lanes-tick.timer")
+    assert "OnCalendar=*:0/10" in timer
+    assert "WantedBy=timers.target" in timer
+    service = unit(home, "lanes-tick.service")
+    assert "Type=oneshot" in service
+    [exec_start] = [line.removeprefix("ExecStart=") for line in service.splitlines() if line.startswith("ExecStart=")]
+    assert shlex.split(exec_start) == [sys.executable, "-m", "lanes", "tick", "--all"]
+    assert systemctl_calls(home) == ["--user daemon-reload", "--user enable --now lanes-tick.timer"]
+
+
+def test_the_service_runs_lanes_tick_all_with_the_path_init_ran_with(home: Path, init: Init, tmp_path: Path) -> None:
+    init()
+    service = unit(home, "lanes-tick.service")
+    [exec_start] = [line.removeprefix("ExecStart=") for line in service.splitlines() if line.startswith("ExecStart=")]
+    [environment] = [line.removeprefix("Environment=") for line in service.splitlines() if line.startswith("Environment=")]
+    empty = tmp_path / "empty-config"
+
+    ran = subprocess.run(
+        shlex.split(exec_start),
+        env={"HOME": str(home), "XDG_CONFIG_HOME": str(empty), "PYTHONPATH": str(Path(__file__).parent.parent / "src")},
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+    )
+
+    assert ran.returncode == 0, ran.stderr
+    assert "no repository is registered" in ran.stdout
+    assert shlex.split(environment) == [f"PATH={os.environ['PATH']}"]
+
+
+def test_init_warns_and_succeeds_when_systemctl_cannot_enable_the_timer(
+    home: Path, init: Init, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("FAKE_SYSTEMCTL_EXIT", "1")
+
+    result = init()
+
+    assert result.exit_code == 0, result.output
+    assert "timer that runs lanes tick --all is written but not enabled" in result.output
+    assert "systemctl --user enable --now lanes-tick.timer" in result.output
+    assert (home / ".config" / "systemd" / "user" / "lanes-tick.timer").is_file()

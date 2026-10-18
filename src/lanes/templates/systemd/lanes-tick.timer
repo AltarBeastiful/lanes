@@ -1,0 +1,9 @@
+# Written by `lanes init`; it rewrites this file each time it runs.
+[Unit]
+Description=Run lanes tick --all every 10 minutes
+
+[Timer]
+OnCalendar=*:0/10
+
+[Install]
+WantedBy=timers.target

@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 from click.testing import CliRunner, Result
 
+from lanes import lock
 from lanes.cli import main
 from lanes.models import Verdict
 
@@ -23,7 +24,7 @@ args = sys.argv[1:]
 with open(os.environ["FAKE_WORLD"]) as file:
     world = json.load(file)
 with open(os.environ["FAKE_GH_LOG"], "a") as log:
-    log.write(json.dumps(args) + "\\n")
+    log.write(json.dumps({"args": args, "cwd": os.getcwd()}) + "\\n")
 if args[:2] == ["repo", "view"]:
     print("owner/repo")
 elif args[:2] == ["pr", "list"]:
@@ -229,6 +230,13 @@ class World:
         self.save(world)
 
     def gh_calls(self) -> list[list[str]]:
+        return [call["args"] for call in self._gh_runs()]
+
+    def gh_cwds(self) -> set[str]:
+        """Every working directory `gh` was run from."""
+        return {call["cwd"] for call in self._gh_runs()}
+
+    def _gh_runs(self) -> list[dict[str, Any]]:
         return [json.loads(line) for line in self._gh_log.read_text().splitlines()] if self._gh_log.exists() else []
 
     def agent_calls(self) -> list[list[str]]:
@@ -302,6 +310,7 @@ def world(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> World:
     monkeypatch.setenv("FAKE_CLAUDE_LOG", str(tmp_path / "claude.log"))
     monkeypatch.setenv("FAKE_REVIEW_LOG", str(tmp_path / "review.log"))
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "config"))
     monkeypatch.chdir(repo)
     return World(tmp_path, repo)
 
@@ -913,3 +922,78 @@ def test_a_failing_notify_cmd_is_reported_and_the_question_still_asked(world: Wo
     assert result.exit_code == 0, result.output
     assert len(world.resumes()) == 1
     assert "asked you" in result.output and "notify_cmd exited 3" in result.output
+
+
+def register(world: World, *repos: Path) -> None:
+    """Register `repos` in the user-level registry `lanes tick --all` walks, as `lanes init` does."""
+    config_home = world.repo.parent / "config"
+    (config_home / "lanes").mkdir(parents=True, exist_ok=True)
+    (config_home / "lanes" / "repos.toml").write_text(f"repos = {json.dumps([str(repo) for repo in repos])}\n")
+
+
+def another_repo(world: World, name: str) -> Path:
+    """A second repository set up for Lanes like `world.repo`."""
+    repo = world.repo.parent / name
+    (repo / ".lanes").mkdir(parents=True)
+    (repo / ".lanes" / "lanes.toml").write_text(LANES_TOML)
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    return repo
+
+
+def tick_all() -> Result:
+    return CliRunner().invoke(main, ["tick", "--all"])
+
+
+def test_tick_all_ticks_every_registered_repository(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    other = another_repo(world, "other")
+    register(world, world.repo, other)
+    world.red_pr(log=github_log(["new failure: tests/test_calc.py::test_add"]))
+    monkeypatch.chdir(tmp_path)
+
+    result = tick_all()
+
+    assert result.exit_code == 0, result.output
+    assert world.gh_cwds() == {str(world.repo), str(other)}
+    assert f"{world.repo}:" in result.output and f"{other}:" in result.output
+
+
+@pytest.mark.parametrize("broken", ["gone", "unconfigured", "invalid"])
+def test_one_failing_repository_does_not_stop_the_others(
+    world: World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, broken: str
+) -> None:
+    repo = tmp_path / broken
+    if broken != "gone":
+        subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    if broken == "invalid":
+        (repo / ".lanes").mkdir()
+        (repo / ".lanes" / "lanes.toml").write_text('host = "gitlab"\n')
+    register(world, repo, world.repo)
+    world.red_pr(log=github_log(["new failure: tests/test_calc.py::test_add"]))
+    monkeypatch.chdir(tmp_path)
+
+    result = tick_all()
+
+    assert result.exit_code == 1, result.output
+    assert f"{repo}:\nlanes tick: " in result.output
+    [resume] = world.resumes()
+    assert resume["name"] == "T9"
+
+
+@pytest.mark.parametrize("command", [["tick"], ["tick", "--all"]])
+def test_a_tick_while_another_holds_the_repository_exits_without_acting(world: World, command: list[str]) -> None:
+    register(world, world.repo)
+    world.red_pr(log=github_log(["new failure: tests/test_calc.py::test_add"]))
+
+    with lock.exclusive(world.repo) as held:
+        busy = CliRunner().invoke(main, command)
+    calls_while_busy = world.gh_calls() + world.agent_calls()
+    after = tick()
+
+    assert held
+    assert busy.exit_code == 0, busy.output
+    assert "another tick is running" in busy.output
+    assert calls_while_busy == []
+    assert after.exit_code == 0, after.output
+    assert len(world.resumes()) == 1

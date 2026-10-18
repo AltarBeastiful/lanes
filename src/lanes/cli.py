@@ -1,5 +1,6 @@
 """The `lanes` command line: builds the ports and passes them in."""
 
+import os
 import subprocess
 import sys
 import tomllib
@@ -8,7 +9,7 @@ from typing import Any, get_args
 
 import click
 
-from lanes import install, registry, report as reports, ticket, tick as ticks
+from lanes import install, lock, registry, report as reports, ticket, tick as ticks, timer
 from lanes.agents import AgentError
 from lanes.agents.claude import ClaudeAgents, workspace_trusted
 from lanes.hosts import HostAdapter, HostError
@@ -103,24 +104,57 @@ def report() -> None:
 
 
 @main.command()
-def tick() -> None:
+@click.option("--all", "every", is_flag=True, help="Tick every repository lanes init registered, one after another.")
+def tick(every: bool) -> None:
     """Act once on each lane: review a green one, resume it with failures or blocking findings, update or mark ready a
     clean one, continue a failed session, or have a blocked or needs-human lane ask you why it needs you."""
+    if not every:
+        _tick_here()
+        return
+    repos = registry.load().repos
+    if not repos:
+        click.echo("lanes tick --all: no repository is registered; run lanes init in one")
+    start, failed = Path.cwd(), False
+    for repo in repos:
+        click.echo(f"{repo}:")
+        try:
+            os.chdir(repo)
+            _tick_here()
+        except SystemExit as stop:
+            # The tick has said why already.
+            failed = failed or bool(stop.code)
+        except Exception as error:
+            # One broken repository must not stop the others.
+            click.echo(f"lanes tick: {repo}: {error}", err=True)
+            failed = True
+        finally:
+            os.chdir(start)
+    if failed:
+        sys.exit(1)
+
+
+def _tick_here() -> None:
+    """Tick the repository the working directory is in."""
     config = _config()
     # GitHub is the only pull request host the config allows so far.
     host = GitHubHost()
-    try:
-        for line in ticks.run(host, _store(), ClaudeAgents(), LocalReviewers(), config, _standards()):
-            click.echo(line)
-    except (HostError, AgentError, ReviewerError) as error:
-        click.echo(f"lanes tick: {error}", err=True)
-        sys.exit(2)
+    with lock.exclusive(_git_root()) as held:
+        if not held:
+            click.echo("lanes tick: another tick is running in this repository; leaving it alone")
+            return
+        try:
+            for line in ticks.run(host, _store(), ClaudeAgents(), LocalReviewers(), config, _standards()):
+                click.echo(line)
+        except (HostError, AgentError, ReviewerError) as error:
+            click.echo(f"lanes tick: {error}", err=True)
+            sys.exit(2)
 
 
 @main.command()
 @click.option("--force", is_flag=True, help="Overwrite installed files that differ from what init writes.")
 def init(force: bool) -> None:
-    """Set up the current repository for Lanes: config, hotspots, gates, runner, agents and hooks."""
+    """Set up the current repository for Lanes: config, hotspots, gates, runner, agents and hooks; register it and
+    enable the timer that ticks every registered repository."""
     repo = _git_root()
     host = click.prompt("Host for pull requests", type=_choice(Host), default="github")
     tracker = click.prompt("Tracker for tickets", type=_choice(Tracker), default="github")
@@ -167,6 +201,14 @@ def init(force: bool) -> None:
         sys.exit(2)
     install.install(repo, config)
     registry.register(repo)
+    try:
+        timer.install()
+    except timer.TimerError as error:
+        click.echo(
+            f"warning: the timer that runs lanes tick --all is written but not enabled: {error}. Once systemctl "
+            f"works, run `systemctl --user enable --now {timer.TIMER}`.",
+            err=True,
+        )
     if not workspace_trusted(repo):
         click.echo(
             f"warning: Claude Code's workspace trust has not been accepted for {repo}, so lanes "
