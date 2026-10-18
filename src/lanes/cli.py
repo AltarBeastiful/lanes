@@ -42,8 +42,8 @@ def _pull_request_host() -> HostAdapter:
         command = click.get_current_context().info_name
         click.echo(f"lanes {command}: no .lanes/lanes.toml names the pull request host; run lanes init", err=True)
         sys.exit(2)
-    host = LanesConfig.model_validate(tomllib.loads(config.read_text(encoding="utf-8"))).host
-    assert host == "github", f"no adapter for host {host}"
+    LanesConfig.model_validate(tomllib.loads(config.read_text(encoding="utf-8")))
+    # GitHub is the only pull request host the config allows so far.
     return GitHubHost()
 
 
