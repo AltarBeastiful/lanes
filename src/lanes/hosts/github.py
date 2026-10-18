@@ -89,8 +89,15 @@ class GitHubHost:
     def ci_log(self, ref: str) -> str:
         repo, number = self._here(), ref.removeprefix("#")
         checks = json.loads(self._gh("pr", "view", number, "--repo", repo, "--json", _CHECKS))[_CHECKS]
-        jobs = [job.group(1) for check in _latest(checks) if _state(check) in _RED and (job := _JOB_URL.search(_url(check)))]
-        return "".join(_plain(self._gh("run", "view", "--repo", repo, "--job", job, "--log-failed")) for job in jobs)
+        latest = _latest(checks)
+        red = [check for check in latest if _state(check) in _RED]
+        # A failed job's log is cut to its failed steps; a green one has none, so its whole log is read.
+        flag = "--log-failed" if red else "--log"
+        jobs = [job.group(1) for check in red or latest if (job := _JOB_URL.search(_url(check)))]
+        return "".join(_plain(self._gh("run", "view", "--repo", repo, "--job", job, flag)) for job in jobs)
+
+    def diff(self, ref: str) -> str:
+        return self._gh("pr", "diff", ref.removeprefix("#"), "--repo", self._here())
 
     def label_pull_request(self, ref: str, label: str) -> None:
         self._label("pr", ref.removeprefix("#"), self._here(), label)

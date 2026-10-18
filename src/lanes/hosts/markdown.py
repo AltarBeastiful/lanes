@@ -73,6 +73,9 @@ class MarkdownHost:
     def ci_log(self, ref: str) -> str:
         raise HostError("markdown tickets have no pull requests")
 
+    def diff(self, ref: str) -> str:
+        raise HostError("markdown tickets have no pull requests")
+
     def label_pull_request(self, ref: str, label: str) -> None:
         raise HostError("markdown tickets have no pull requests")
 

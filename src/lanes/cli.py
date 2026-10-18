@@ -15,6 +15,8 @@ from lanes.hosts import HostAdapter, HostError
 from lanes.hosts.github import GitHubHost
 from lanes.hosts.markdown import MarkdownHost
 from lanes.models import FailureLogged, Host, LanesConfig, Reviewer, TierReviewers, Tracker
+from lanes.reviewers import ReviewerError
+from lanes.reviewers.local import LocalReviewers
 from lanes.store import LaneStore
 from lanes.store.files import FileStore, state_directory
 
@@ -35,16 +37,20 @@ def _host() -> HostAdapter:
     return MarkdownHost(Path.cwd())
 
 
-def _pull_request_host() -> HostAdapter:
-    """The host `.lanes/lanes.toml` names for pull requests; there is none without it."""
+def _config() -> LanesConfig:
+    """`.lanes/lanes.toml`, which every command that works on pull requests needs."""
     config = _git_root() / ".lanes" / "lanes.toml"
     if not config.is_file():
         command = click.get_current_context().info_name
         click.echo(f"lanes {command}: no .lanes/lanes.toml names the pull request host; run lanes init", err=True)
         sys.exit(2)
-    LanesConfig.model_validate(tomllib.loads(config.read_text(encoding="utf-8")))
-    # GitHub is the only pull request host the config allows so far.
-    return GitHubHost()
+    return LanesConfig.model_validate(tomllib.loads(config.read_text(encoding="utf-8")))
+
+
+def _standards() -> str:
+    """The repository's `CODING_STANDARDS.md`, which every reviewer reads; empty when it has none."""
+    standards = _git_root() / "CODING_STANDARDS.md"
+    return standards.read_text(encoding="utf-8") if standards.is_file() else ""
 
 
 def _store() -> LaneStore:
@@ -98,11 +104,15 @@ def report() -> None:
 
 @main.command()
 def tick() -> None:
-    """Act once on each lane: resume a red one with its failures, or bring in a person after two fix rounds."""
+    """Act once on each lane: review a green one, resume it with failures or blocking findings, or bring in a person
+    after two fix rounds."""
+    config = _config()
+    # GitHub is the only pull request host the config allows so far.
+    host = GitHubHost()
     try:
-        for line in ticks.run(_pull_request_host(), _store(), ClaudeAgents()):
+        for line in ticks.run(host, _store(), ClaudeAgents(), LocalReviewers(), config, _standards()):
             click.echo(line)
-    except (HostError, AgentError) as error:
+    except (HostError, AgentError, ReviewerError) as error:
         click.echo(f"lanes tick: {error}", err=True)
         sys.exit(2)
 

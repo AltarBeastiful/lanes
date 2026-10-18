@@ -48,6 +48,10 @@ class TierReviewers(BaseModel):
     medium: list[Reviewer]
     high: list[Reviewer]
 
+    def for_tier(self, tier: Tier) -> list[Reviewer]:
+        reviewers: list[Reviewer] = getattr(self, tier)
+        return reviewers
+
 
 class LanesConfig(BaseModel):
     """`.lanes/lanes.toml`, the committed configuration `lanes init` writes."""
@@ -114,6 +118,38 @@ class FixRound(_Event):
     commit: str | None
 
 
+class Finding(BaseModel):
+    """One problem a reviewer found, at a line of the commit it reviewed."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    file: str
+    line: int
+    message: str
+
+
+class Verdict(BaseModel):
+    """One reviewer's result for one commit: what blocks the merge, and nits that never do.
+
+    The JSON schema reviewers fill is generated from this model, so every field is required and none is extra.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    blocking: list[Finding]
+    nits: list[str]
+
+
+class VerdictGiven(_Event):
+    """A reviewer's verdict on a lane's commit, logged so that the commit is never reviewed twice."""
+
+    event: Literal["verdict"] = "verdict"
+    version: Literal[1] = 1
+    reviewer: Reviewer
+    commit: str
+    verdict: Verdict
+
+
 class FailureLoggedV1(_Event):
     """A defect caught at merge, before the event carried the ticket's route and tier."""
 
@@ -132,7 +168,7 @@ class FailureLogged(_Event):
     what: str
 
 
-Event = LaneDispatched | FixRound | FailureLogged
+Event = LaneDispatched | FixRound | VerdictGiven | FailureLogged
 
 
 def _event_tag(record: Any) -> str:
@@ -145,6 +181,7 @@ LogRecord = Annotated[
     Annotated[LaneDispatched, Tag("lane_dispatched/1")]
     | Annotated[FixRoundV1, Tag("fix_round/1")]
     | Annotated[FixRound, Tag("fix_round/2")]
+    | Annotated[VerdictGiven, Tag("verdict/1")]
     | Annotated[FailureLoggedV1, Tag("failure_logged/1")]
     | Annotated[FailureLogged, Tag("failure_logged/2")],
     Discriminator(_event_tag),
