@@ -1,0 +1,75 @@
+#!/usr/bin/env python3
+"""The Lanes runner for pytest: the only part of the gates that knows a test framework (ADR-0002).
+
+    run [files...]  Run the given test files, or the whole suite, and print one
+                    `<outcome> <test-id>` line per test on stdout. Outcomes are
+                    passed, failed, skipped, xfailed and error (a file that fails to
+                    collect). Exit 0 when everything passed, 1 on a test failure,
+                    anything else when the run is inconclusive.
+    skips           Run the whole suite and print the ID of every skipped or xfailed
+                    test, one per line.
+
+pytest's own report goes to stderr, so stdout carries only the lines above.
+"""
+
+import contextlib
+import sys
+
+import pytest
+
+RANK = {"passed": 0, "skipped": 1, "xfailed": 2, "failed": 3, "error": 4}
+
+
+class Outcomes:
+    """Keeps the worst outcome seen for each test across its setup, call and teardown."""
+
+    def __init__(self) -> None:
+        self.by_id: dict[str, str] = {}
+
+    def record(self, test_id: str, outcome: str) -> None:
+        if RANK[outcome] >= RANK[self.by_id.get(test_id, "passed")]:
+            self.by_id[test_id] = outcome
+
+    def pytest_collectreport(self, report: pytest.CollectReport) -> None:
+        if report.failed:
+            self.record(report.nodeid, "error")
+
+    def pytest_runtest_logreport(self, report: pytest.TestReport) -> None:
+        if report.failed:
+            self.record(report.nodeid, "failed")
+        elif hasattr(report, "wasxfail"):
+            self.record(report.nodeid, "xfailed")
+        elif report.skipped:
+            self.record(report.nodeid, "skipped")
+        elif report.when == "call":
+            self.record(report.nodeid, "passed")
+
+
+def run(files: list[str]) -> tuple[int, dict[str, str]]:
+    outcomes = Outcomes()
+    # A whole-suite run keeps going past a file that fails to collect, so the
+    # other tests still report; a run of named files stops, which is inconclusive.
+    keep_going = [] if files else ["--continue-on-collection-errors"]
+    with contextlib.redirect_stdout(sys.stderr):
+        code = pytest.main(["-p", "no:cacheprovider", "-q", *keep_going, *files], plugins=[outcomes])
+    return int(code), outcomes.by_id
+
+
+def main(argv: list[str]) -> int:
+    if argv[:1] == ["run"]:
+        code, by_id = run(argv[1:])
+        for test_id, outcome in by_id.items():
+            print(outcome, test_id)
+        return code
+    if argv == ["skips"]:
+        code, by_id = run([])
+        for test_id, outcome in by_id.items():
+            if outcome in ("skipped", "xfailed"):
+                print(test_id)
+        return 0 if code in (0, 1) else code
+    print("usage: runner run [files...] | runner skips", file=sys.stderr)
+    return 64
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

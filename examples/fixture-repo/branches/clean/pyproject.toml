@@ -1,0 +1,10 @@
+[project]
+name = "fixture"
+version = "0.2.0"
+description = "A fixture"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+
+[tool.ruff]
+line-length = 100

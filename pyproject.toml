@@ -27,6 +27,8 @@ dev = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Import the checked-out source, not the editable install, so a base worktree tests its own code.
+pythonpath = ["src"]
 
 [tool.mypy]
 strict = true
