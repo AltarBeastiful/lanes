@@ -6,6 +6,7 @@ requests, CI logs, tickets, sessions and reviewers' verdicts, ticks, and reads b
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
@@ -35,6 +36,14 @@ elif args[:2] == ["issue", "view"]:
     print(json.dumps({"body": world["tickets"][args[2]]}))
 elif args[:2] == ["run", "view"]:
     print(world["jobs"][args[args.index("--job") + 1]], end="")
+elif args[:2] == ["api", "user"]:
+    print(json.dumps({"login": "me"}))
+elif args[:2] == ["pr", "update-branch"]:
+    branch = world.get("branches", {}).get(args[2], "current")
+    if branch == "conflict":
+        print("X Cannot update PR branch due to conflicts", file=sys.stderr)
+        sys.exit(1)
+    print("✓ PR branch updated" if branch == "behind" else "✓ PR branch already up-to-date")
 """
 
 FAKE_CLAUDE = """#!/usr/bin/env python3
@@ -67,6 +76,7 @@ if "--resume" in args:
         world["sessions"].append({**session, "id": copy[:8], "sessionId": copy, "startedAt": session["startedAt"] + 1})
         print(f"note: session {session['id']} is already running in the background, so this started a copy as {copy[:8]}.")
         session = world["sessions"][-1]
+    session["state"] = "working"
 else:
     session = {"id": "dddddddd", "sessionId": "dddddddd-0000-0000-0000-000000000000", "name": name, "state": "working",
                "cwd": os.getcwd(), "kind": "background", "startedAt": 1}
@@ -207,6 +217,12 @@ class World:
         """Each reviewer run: who reviewed, its arguments, the schema it was given, its prompt and working directory."""
         return [json.loads(line) for line in self._review_log.read_text().splitlines()] if self._review_log.exists() else []
 
+    def branch(self, number: int, state: str) -> None:
+        """Where pull request `number`'s branch stands against `main`: behind, conflict or current."""
+        world = self.load()
+        world.setdefault("branches", {})[str(number)] = state
+        self.save(world)
+
     def copy_on_resume(self, session: str, copy: str) -> None:
         world = self.load()
         world.setdefault("copies", {})[session] = copy
@@ -214,6 +230,11 @@ class World:
 
     def gh_calls(self) -> list[list[str]]:
         return [json.loads(line) for line in self._gh_log.read_text().splitlines()] if self._gh_log.exists() else []
+
+    def agent_calls(self) -> list[list[str]]:
+        """Every `claude` call but listing sessions, and every reviewer run."""
+        calls = [json.loads(line)["args"] for line in self._claude_log.read_text().splitlines()] if self._claude_log.exists() else []
+        return [args for args in calls if args[:1] != ["agents"]] + [review["args"] for review in self.reviews()]
 
     def resumes(self) -> list[dict[str, Any]]:
         """Each `claude --resume`: the session resumed, its name, prompt and working directory."""
@@ -244,8 +265,12 @@ def check(conclusion: str, job: str, started: str = "2026-10-18T17:00:00Z") -> d
 
 
 def pr_json(number: int, ticket: int, head: str, checks: list[dict[str, Any]], labels: list[str] = []) -> dict[str, Any]:
+    """A draft, as a lane opens it, written by `me`: the account Lanes and its sessions run `gh` as."""
     return {
         "number": number,
+        "headRefName": f"lane-{ticket}",
+        "isDraft": True,
+        "author": {"login": "me"},
         "body": f"Closes #{ticket}\n\n## Summary\n\nSomething.\n",
         "headRefOid": head,
         "labels": [{"name": label} for label in labels],
@@ -456,7 +481,7 @@ def test_a_commit_is_reviewed_once_and_a_new_commit_again(world: World) -> None:
 
     assert again.exit_code == 0, again.output
     assert pushed.exit_code == 0, pushed.output
-    assert "T9" not in again.output
+    assert "reviewed" not in again.output
     assert sorted((event["commit"], event["reviewer"]) for event in logged(world)) == [
         ("c0ffee1", "claude-high"),
         ("c0ffee1", "codex"),
@@ -616,3 +641,117 @@ def test_codex_is_handed_the_reviewer_agents_instructions(world: World) -> None:
     [review] = world.reviews()
     assert review["prompt"].startswith("A finding blocks only when merging is wrong.")
     assert "The mean of a list rounds to two places." in review["prompt"]
+
+
+def test_a_clean_lane_behind_main_is_updated_without_any_agent_call(world: World) -> None:
+    world.green_pr(head="c0ffee1")
+    world.branch(31, "behind")
+
+    result = tick()
+
+    assert result.exit_code == 0, result.output
+    assert ["pr", "update-branch", "31", "--repo", "owner/repo"] in world.gh_calls()
+    assert world.agent_calls() == []
+    assert not [call for call in world.gh_calls() if call[:2] == ["pr", "ready"]]
+    assert "T9" in result.output and "updated" in result.output
+
+
+def test_a_conflict_resumes_the_lane_once_to_rebase_and_a_second_needs_a_human(world: World) -> None:
+    world.green_pr(head="c0ffee1")
+    world.branch(31, "conflict")
+
+    first = tick()
+    again = tick()
+    world.green_pr(head="c0ffee2")
+    still = tick()
+
+    assert first.exit_code == 0, first.output
+    [resume] = world.resumes()
+    assert (resume["session"], resume["name"], resume["cwd"]) == (SESSION, "T9", str(world.worktree))
+    assert "rebase on origin/main" in resume["prompt"]
+    assert again.exit_code == 0, again.output
+    assert "T9" not in again.output
+    assert still.exit_code == 0, still.output
+    assert ["pr", "edit", "31", "--repo", "owner/repo", "--add-label", "needs-human"] in world.gh_calls()
+    assert "needs-human" in still.output
+    assert [event["event"] for event in logged(world)] == ["rebase_requested"]
+
+
+@pytest.mark.parametrize(
+    ("author", "asked"),
+    [("someone", ["--add-reviewer", "me"]), ("me", ["--add-assignee", "@me"])],
+    ids=["by-someone-else", "by-me-who-cannot-review-my-own"],
+)
+def test_an_up_to_date_clean_lane_is_marked_ready_and_my_review_asked_for(
+    world: World, author: str, asked: list[str]
+) -> None:
+    world.configure(medium=["codex"])
+    world.green_pr(head="c0ffee1")
+    written = world.load()
+    written["prs"][0]["author"] = {"login": author}
+    world.save(written)
+
+    reviewed = tick()
+    landed = tick()
+    ready = world.load()
+    ready["prs"][0]["isDraft"] = False
+    world.save(ready)
+    again = tick()
+
+    assert reviewed.exit_code == 0, reviewed.output
+    assert landed.exit_code == 0, landed.output
+    assert ["pr", "update-branch", "31", "--repo", "owner/repo"] in world.gh_calls()
+    assert [call for call in world.gh_calls() if call[:2] == ["pr", "ready"]] == [["pr", "ready", "31", "--repo", "owner/repo"]]
+    assert ["pr", "edit", "31", "--repo", "owner/repo", *asked] in world.gh_calls()
+    assert "T9" in landed.output and "ready" in landed.output
+    assert again.exit_code == 0, again.output
+    assert "T9" not in again.output
+    assert world.resumes() == []
+
+
+@pytest.mark.parametrize("ci", ["pending", "red"])
+def test_a_failed_session_is_resumed_with_continue_and_nothing_else(world: World, ci: str) -> None:
+    world.red_pr(log=github_log(["new failure: tests/test_calc.py::test_add"]))
+    if ci == "pending":
+        pending = world.load()
+        pending["prs"][0]["statusCheckRollup"] = []
+        world.save(pending)
+    rebooted = world.load()
+    rebooted["sessions"][0]["state"] = "failed"
+    world.save(rebooted)
+
+    result = tick()
+
+    assert result.exit_code == 0, result.output
+    [resume] = world.resumes()
+    assert (resume["session"], resume["name"], resume["prompt"]) == (SESSION, "T9", "continue")
+    assert logged(world) == []
+    assert "T9" in result.output and "continue" in result.output
+
+
+def test_with_the_state_directory_deleted_the_next_tick_finds_every_open_lane(world: World) -> None:
+    # T9's session continued in a copy that kept no name: only its worktree, on the lane's branch, leads to it.
+    subprocess.run(["git", "init", "-q", "-b", "lane-9", str(world.worktree)], check=True)
+    world.red_pr(number=31, ticket=9, head="c0ffee1", log=github_log(["new failure: tests/test_calc.py::test_add"]))
+    world.copy_on_resume(SESSION, COPY)
+    tick()
+    unnamed = world.load()
+    for session in unnamed["sessions"]:
+        if session["sessionId"] == COPY:
+            session["name"] = ""
+    other = world.worktree.parent / "T12"
+    other.mkdir()
+    unnamed["sessions"].append({"id": "bbbbbbbb", "sessionId": "bbbbbbbb-1111-2222-3333-444444444444", "name": "T12",
+                                "state": "done", "cwd": str(other), "kind": "background", "startedAt": 2000})
+    world.save(unnamed)
+    shutil.rmtree(world.repo.parent / "state")
+    world.red_pr(number=31, ticket=9, head="c0ffee2", log=github_log(["new failure: tests/test_calc.py::test_mean"]))
+    world.red_pr(number=32, ticket=12, head="beef001", log=github_log(["new failure: tests/test_calc.py::test_add"]))
+
+    result = tick()
+
+    assert result.exit_code == 0, result.output
+    assert [resume["session"] for resume in world.resumes()] == [
+        SESSION, COPY, "bbbbbbbb-1111-2222-3333-444444444444"
+    ]
+    assert "T9" in result.output and "T12" in result.output

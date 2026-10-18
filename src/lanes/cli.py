@@ -104,8 +104,8 @@ def report() -> None:
 
 @main.command()
 def tick() -> None:
-    """Act once on each lane: review a green one, resume it with failures or blocking findings, or bring in a person
-    after two fix rounds."""
+    """Act once on each lane: review a green one, resume it with failures or blocking findings, update or mark ready a
+    clean one, continue a failed session, or bring in a person after two fix rounds."""
     config = _config()
     # GitHub is the only pull request host the config allows so far.
     host = GitHubHost()

@@ -5,10 +5,13 @@ import re
 import subprocess
 from typing import Any
 
-from lanes.hosts import HostError, TicketNotFound
+from lanes.hosts import HostError, MergeConflict, TicketNotFound
 from lanes.models import CI, PullRequest
 
 _NOT_FOUND = "Could not resolve to an issue"
+# What `gh pr update-branch` prints when there is nothing to update, and when it can't for conflicts.
+_UP_TO_DATE = "PR branch already up-to-date"
+_CONFLICTS = "Cannot update PR branch due to conflicts"
 _LABEL_NOT_FOUND = re.compile(r"'.*' not found$")
 _ISSUE_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/issues/(\d+)")
 _CLOSES = re.compile(r"^Closes #(\d+)\b", re.MULTILINE | re.IGNORECASE)
@@ -72,15 +75,17 @@ class GitHubHost:
         return [comment["body"] for comment in self._issue(ref, "comments")["comments"]]
 
     def pull_requests(self) -> list[PullRequest]:
-        fields = f"number,body,headRefOid,labels,{_CHECKS}"
+        fields = f"number,body,headRefName,headRefOid,isDraft,labels,{_CHECKS}"
         listed = json.loads(self._gh("pr", "list", "--repo", self._here(), "--state", "open", "--limit", "200", "--json", fields))
         return [
             PullRequest(
                 ref=str(pr["number"]),
                 ticket=closes.group(1),
+                branch=pr["headRefName"],
                 head=pr["headRefOid"],
                 ci=_ci(_latest(pr[_CHECKS])),
                 labels=[label["name"] for label in pr["labels"]],
+                draft=pr["isDraft"],
             )
             for pr in listed
             if (closes := _CLOSES.search(pr["body"] or ""))
@@ -101,6 +106,27 @@ class GitHubHost:
 
     def label_pull_request(self, ref: str, label: str) -> None:
         self._label("pr", ref.removeprefix("#"), self._here(), label)
+
+    def update_branch(self, ref: str) -> bool:
+        """Merges the base into the branch, as GitHub's "Update branch" button does."""
+        try:
+            printed = self._gh("pr", "update-branch", ref.removeprefix("#"), "--repo", self._here())
+        except HostError as error:
+            if _CONFLICTS not in str(error):
+                raise
+            raise MergeConflict(str(error)) from None
+        return _UP_TO_DATE not in printed
+
+    def mark_ready(self, ref: str) -> None:
+        self._gh("pr", "ready", ref.removeprefix("#"), "--repo", self._here())
+
+    def request_review(self, ref: str) -> None:
+        """GitHub refuses a review request from the pull request's author, so it is assigned to them instead."""
+        repo, number = self._here(), ref.removeprefix("#")
+        author = json.loads(self._gh("pr", "view", number, "--repo", repo, "--json", "author"))["author"]["login"]
+        me = json.loads(self._gh("api", "user"))["login"]
+        asked = ["--add-assignee", "@me"] if author == me else ["--add-reviewer", me]
+        self._gh("pr", "edit", number, "--repo", repo, *asked)
 
     def _issue(self, ref: str, fields: str) -> dict[str, Any]:
         repo, number = self._locate(ref)

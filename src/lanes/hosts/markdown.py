@@ -79,6 +79,15 @@ class MarkdownHost:
     def label_pull_request(self, ref: str, label: str) -> None:
         raise HostError("markdown tickets have no pull requests")
 
+    def update_branch(self, ref: str) -> bool:
+        raise HostError("markdown tickets have no pull requests")
+
+    def mark_ready(self, ref: str) -> None:
+        raise HostError("markdown tickets have no pull requests")
+
+    def request_review(self, ref: str) -> None:
+        raise HostError("markdown tickets have no pull requests")
+
     def _parts(self, ref: str) -> list[str]:
         """The ticket file split into the ticket itself and each comment after it."""
         return self._path(ref).read_text(encoding="utf-8").split(_COMMENT)
