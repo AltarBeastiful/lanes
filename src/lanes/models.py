@@ -1,8 +1,20 @@
 """Pydantic models: the single source for every structured shape."""
 
-from typing import Annotated, Literal, Self
+from datetime import UTC, datetime
+from typing import Annotated, Any, Literal, Self
 
-from pydantic import BaseModel, ConfigDict, PositiveInt, StringConstraints, model_validator
+from pydantic import (
+    AwareDatetime,
+    BaseModel,
+    ConfigDict,
+    Discriminator,
+    Field,
+    PositiveInt,
+    StringConstraints,
+    Tag,
+    field_validator,
+    model_validator,
+)
 
 Route = Literal["direct", "grill", "spec", "wayfinder"]
 Tier = Literal["trivial", "small", "medium", "high"]
@@ -63,3 +75,67 @@ class Registry(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     repos: list[str] = []
+
+
+class _Event(BaseModel):
+    """One record of the append-only log; `(event, version)` names its shape (ADR-0001)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
+    ticket: str
+
+    @field_validator("ticket")
+    @classmethod
+    def _without_leading_zeros(cls, ticket: str) -> str:
+        """`012` and `12` are the same lane."""
+        return str(int(ticket)) if ticket.isdigit() else ticket
+
+
+class LaneDispatched(_Event):
+    event: Literal["lane_dispatched"] = "lane_dispatched"
+    version: Literal[1] = 1
+    route: Route
+    tier: Tier
+
+
+class FixRound(_Event):
+    event: Literal["fix_round"] = "fix_round"
+    version: Literal[1] = 1
+
+
+class FailureLoggedV1(_Event):
+    """A defect caught at merge, before the event carried the ticket's route and tier."""
+
+    event: Literal["failure_logged"] = "failure_logged"
+    version: Literal[1] = 1
+    what: str
+
+
+class FailureLogged(_Event):
+    """A defect caught at merge, with the route and tier the ticket had then; None only when upgraded from v1."""
+
+    event: Literal["failure_logged"] = "failure_logged"
+    version: Literal[2] = 2
+    route: Route | None
+    tier: Tier | None
+    what: str
+
+
+Event = LaneDispatched | FixRound | FailureLogged
+
+
+def _event_tag(record: Any) -> str:
+    if isinstance(record, dict):
+        return f"{record.get('event')}/{record.get('version')}"
+    return f"{record.event}/{record.version}"
+
+
+LogRecord = Annotated[
+    Annotated[LaneDispatched, Tag("lane_dispatched/1")]
+    | Annotated[FixRound, Tag("fix_round/1")]
+    | Annotated[FailureLoggedV1, Tag("failure_logged/1")]
+    | Annotated[FailureLogged, Tag("failure_logged/2")],
+    Discriminator(_event_tag),
+]
+"""Any record the log may hold, of any version."""

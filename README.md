@@ -5,9 +5,15 @@ Takes a refined ticket to a reviewed, mergeable pull request, with code (never a
 ```bash
 uv run lanes init      # in the target repository: config, hotspots, gates, runner, agents and hooks
 uv run lanes check .scratch/<feature>/issues/01-<slug>.md
+uv run lanes fail 12 "missed null check"   # log a defect you caught at merge in ticket 12's lane
+uv run lanes report                        # first-pass acceptance, fix rounds and defects, per route and tier
 ```
 
 `lanes init` asks for the host, tracker, test command, lint command, N, whether Codex may read the code and the reviewers per tier. It writes `.lanes/lanes.toml`, `.lanes/hotspots.txt`, the gates and the pytest runner, the implementer and reviewer agents in `.claude/agents/` and their hooks in `.lanes/hooks/`, registers the repository in `~/.config/lanes/repos.toml`, and warns if Claude Code's workspace trust hasn't been accepted for it. It refuses a test command other than pytest. Commit what it wrote under the `allow-config` label, then turn on branch protection requiring `gates` and an up-to-date branch by hand.
+
+## Event log
+
+`LaneStore` is the only code that touches the per-repository state directory, `$XDG_STATE_HOME/lanes/<repo>-<hash>/` (`~/.local/state` when that is unset), so nothing Lanes logs lands in the repository. The log, `events.jsonl`, is append-only: one JSON record per line, each named by its `event` and `version`, and older versions are upgraded when read. `lanes fail` appends a `failure_logged` record carrying the ticket's route and tier. `lanes report` groups lanes and defects by the route and tier each lane was dispatched with, falling back to the ticket's own for a lane Lanes never dispatched, and names the five lanes with the most fix rounds and failures, worth a `/retro`.
 
 ## Gates
 

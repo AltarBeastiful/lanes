@@ -19,14 +19,27 @@ _PLACEHOLDER = re.compile(r"^(acceptance criterion \d+|tbd|todo|\.\.\.)$", re.IG
 
 def problems(body: str) -> list[str]:
     """Every reason the ticket can't be dispatched; empty when it passes `lanes check`."""
-    found: list[str] = []
+    start, end = _section(body, "Lanes") or (len(body), len(body))
+    return _lanes_problems(body) + _criteria_problems(body[:start] + body[end:])
+
+
+def lanes_section(body: str) -> TicketLanesSection:
+    """The ticket's parsed `## Lanes` block; raises `ValueError` naming everything wrong with it."""
+    found = _lanes_problems(body)
+    if found:
+        raise ValueError("; ".join(found))
+    return TicketLanesSection.model_validate(tomllib.loads(_lanes_toml(body) or ""))
+
+
+def _lanes_problems(body: str) -> list[str]:
+    toml = _lanes_toml(body)
+    return (["no ## Lanes section with a ```toml block"] if toml is None else []) + _section_problems(toml or "")
+
+
+def _lanes_toml(body: str) -> str | None:
     start, end = _section(body, "Lanes") or (len(body), len(body))
     block = _TOML_BLOCK.search(body, start, end)
-    if block is None:
-        found.append("no ## Lanes section with a ```toml block")
-    found += _section_problems(block.group(1) if block else "")
-    found += _criteria_problems(body[:start] + body[end:])
-    return found
+    return block.group(1) if block else None
 
 
 def _criteria_problems(body: str) -> list[str]:

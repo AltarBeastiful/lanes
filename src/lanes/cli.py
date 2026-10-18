@@ -7,14 +7,20 @@ from typing import Any, get_args
 
 import click
 
-from lanes import agents, install, registry, ticket
+from lanes import agents, install, registry, report as reports, ticket
 from lanes.hosts import HostAdapter, TicketNotFound
 from lanes.hosts.markdown import MarkdownHost
-from lanes.models import Host, LanesConfig, Reviewer, TierReviewers, Tracker
+from lanes.models import FailureLogged, Host, LanesConfig, Reviewer, TierReviewers, Tracker
+from lanes.store import LaneStore
+from lanes.store.files import FileStore, state_directory
 
 
 def _host() -> HostAdapter:
     return MarkdownHost(Path.cwd())
+
+
+def _store() -> LaneStore:
+    return FileStore(state_directory(_git_root()))
 
 
 @click.group()
@@ -37,6 +43,26 @@ def check(ref: str) -> None:
     if found:
         sys.exit(1)
     click.echo(f"{ref}: ok")
+
+
+@main.command()
+@click.argument("ref")
+@click.argument("what")
+def fail(ref: str, what: str) -> None:
+    """Log WHAT, a defect caught at merge in the lane for ticket REF."""
+    try:
+        section = ticket.lanes_section(_host().read_ticket(ref))
+    except (TicketNotFound, ValueError) as error:
+        click.echo(f"{ref}: {error}", err=True)
+        sys.exit(2)
+    _store().append(FailureLogged(ticket=ref, route=section.route, tier=section.tier, what=what))
+    click.echo(f"{ref}: logged a defect caught at merge")
+
+
+@main.command()
+def report() -> None:
+    """Show first-pass acceptance, fix rounds and defects caught at merge, per route and tier."""
+    click.echo(reports.render(_store().events()))
 
 
 @main.command()
@@ -101,7 +127,8 @@ def init(force: bool) -> None:
 def _git_root() -> Path:
     found = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     if found.returncode != 0:
-        click.echo("lanes init: not a git repository; run it inside the repository to set up", err=True)
+        command = click.get_current_context().info_name
+        click.echo(f"lanes {command}: not a git repository; run it inside the repository", err=True)
         sys.exit(2)
     return Path(found.stdout.strip()).resolve()
 
