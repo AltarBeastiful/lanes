@@ -19,8 +19,8 @@ def _host() -> HostAdapter:
     return MarkdownHost(Path.cwd())
 
 
-def _store(command: str) -> LaneStore:
-    return FileStore(state_directory(_git_root(command)))
+def _store() -> LaneStore:
+    return FileStore(state_directory(_git_root()))
 
 
 @click.group()
@@ -55,21 +55,21 @@ def fail(ref: str, what: str) -> None:
     except (TicketNotFound, ValueError) as error:
         click.echo(f"{ref}: {error}", err=True)
         sys.exit(2)
-    _store("fail").append(FailureLogged(ticket=_ticket_id(ref), route=section.route, tier=section.tier, what=what))
+    _store().append(FailureLogged(ticket=ref, route=section.route, tier=section.tier, what=what))
     click.echo(f"{ref}: logged a defect caught at merge")
 
 
 @main.command()
 def report() -> None:
     """Show first-pass acceptance, fix rounds and defects caught at merge, per route and tier."""
-    click.echo(reports.render(_store("report").events()))
+    click.echo(reports.render(_store().events()))
 
 
 @main.command()
 @click.option("--force", is_flag=True, help="Overwrite installed files that differ from what init writes.")
 def init(force: bool) -> None:
     """Set up the current repository for Lanes: config, hotspots, gates, runner, agents and hooks."""
-    repo = _git_root("init")
+    repo = _git_root()
     host = click.prompt("Host for pull requests", type=_choice(Host), default="github")
     tracker = click.prompt("Tracker for tickets", type=_choice(Tracker), default="github")
     test_command = click.prompt("Test command", default="pytest")
@@ -124,17 +124,13 @@ def init(force: bool) -> None:
     click.echo("Wrote .lanes/, .claude/agents/ and .github/workflows/gates.yml; commit them under the allow-config label.")
 
 
-def _git_root(command: str) -> Path:
+def _git_root() -> Path:
     found = subprocess.run(["git", "rev-parse", "--show-toplevel"], capture_output=True, text=True)
     if found.returncode != 0:
+        command = click.get_current_context().info_name
         click.echo(f"lanes {command}: not a git repository; run it inside the repository", err=True)
         sys.exit(2)
     return Path(found.stdout.strip()).resolve()
-
-
-def _ticket_id(ref: str) -> str:
-    """A ticket number without its leading zeros, so `012` and `12` are the same lane."""
-    return str(int(ref)) if ref.isdigit() else ref
 
 
 def _choice(literal: Any) -> click.Choice[str]:

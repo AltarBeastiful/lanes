@@ -60,12 +60,13 @@ def test_fail_appends_one_versioned_event(lanes: Lanes, state: Path) -> None:
     assert (event["ticket"], event["route"], event["tier"], event["what"]) == ("12", "direct", "medium", "missed null check")
 
 
-def test_fail_writes_nothing_inside_the_repository(lanes: Lanes, repo: Path) -> None:
+def test_fail_and_report_write_nothing_inside_the_repository(lanes: Lanes, repo: Path) -> None:
     before = sorted(repo.rglob("*"))
 
-    result = lanes("fail", "12", "missed null check")
+    failed, reported = lanes("fail", "12", "missed null check"), lanes("report")
 
-    assert result.exit_code == 0, result.output
+    assert failed.exit_code == 0, failed.output
+    assert reported.exit_code == 0, reported.output
     assert sorted(repo.rglob("*")) == before
 
 
@@ -75,6 +76,16 @@ def test_fail_on_an_unknown_ticket_logs_nothing(lanes: Lanes, state: Path) -> No
     assert result.exit_code == 2
     assert "no ticket numbered 99" in result.output
     assert logged(state) == []
+
+
+def test_a_ticket_named_with_leading_zeros_is_the_same_lane(lanes: Lanes, repo: Path) -> None:
+    FileStore(state_directory(repo)).append(LaneDispatched(ticket="12", route="direct", tier="medium"))
+    lanes("fail", "012", "missed null check")
+
+    result = lanes("report")
+
+    assert "T12: 0 fix rounds, 1 failure" in result.output
+    assert "T012" not in result.output
 
 
 def test_report_shows_a_logged_defect_under_its_route_and_tier(lanes: Lanes) -> None:

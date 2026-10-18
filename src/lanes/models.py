@@ -12,6 +12,7 @@ from pydantic import (
     PositiveInt,
     StringConstraints,
     Tag,
+    field_validator,
     model_validator,
 )
 
@@ -83,6 +84,12 @@ class _Event(BaseModel):
 
     at: AwareDatetime = Field(default_factory=lambda: datetime.now(UTC))
     ticket: str
+
+    @field_validator("ticket")
+    @classmethod
+    def _without_leading_zeros(cls, ticket: str) -> str:
+        """`012` and `12` are the same lane."""
+        return str(int(ticket)) if ticket.isdigit() else ticket
 
 
 class LaneDispatched(_Event):

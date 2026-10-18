@@ -35,4 +35,3 @@ class FileStore:
         lines = self._log.read_text(encoding="utf-8").splitlines()
         records = [_RECORD.validate_json(line) for line in lines if line.strip()]
         return upgrade(records)
-
