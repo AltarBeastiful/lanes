@@ -106,10 +106,10 @@ def test_report_shows_first_pass_acceptance_and_fix_rounds_per_route_and_tier(la
     store.append(LaneDispatched(ticket="12", route="direct", tier="medium"))
     store.append(LaneDispatched(ticket="15", route="grill", tier="small"))
     store.append(LaneDispatched(ticket="16", route="grill", tier="small"))
-    store.append(FixRound(ticket="12"))
-    store.append(FixRound(ticket="15"))
-    store.append(FixRound(ticket="15"))
-    store.append(FixRound(ticket="15"))
+    store.append(FixRound(ticket="12", commit="abc"))
+    store.append(FixRound(ticket="15", commit="abc"))
+    store.append(FixRound(ticket="15", commit="abc"))
+    store.append(FixRound(ticket="15", commit="abc"))
 
     result = lanes("report")
 
@@ -125,8 +125,8 @@ def test_report_names_the_lanes_with_the_most_fix_rounds_or_failures(lanes: Lane
     store.append(LaneDispatched(ticket="12", route="direct", tier="medium"))
     store.append(LaneDispatched(ticket="15", route="grill", tier="small"))
     store.append(LaneDispatched(ticket="16", route="grill", tier="small"))
-    store.append(FixRound(ticket="12"))
-    store.append(FixRound(ticket="15"))
+    store.append(FixRound(ticket="12", commit="abc"))
+    store.append(FixRound(ticket="15", commit="abc"))
     lanes("fail", "15", "wrong default")
 
     result = lanes("report")
@@ -168,3 +168,15 @@ def test_report_puts_a_v1_failure_with_no_dispatched_lane_under_unknown(lanes: L
     assert result.exit_code == 0, result.output
     rows = {tuple(line.split()[:2]): line.split() for line in result.output.splitlines()}
     assert rows[("unknown", "unknown")][-1] == "1"
+
+
+def test_report_counts_a_fix_round_logged_before_events_carried_the_commit(lanes: Lanes, repo: Path) -> None:
+    FileStore(state_directory(repo)).append(LaneDispatched(ticket="12", route="direct", tier="medium"))
+    v1 = {"at": "2026-10-18T09:00:00Z", "ticket": "12", "event": "fix_round", "version": 1}
+    with (state_directory(repo) / "events.jsonl").open("a") as log:
+        log.write(json.dumps(v1) + "\n")
+
+    result = lanes("report")
+
+    assert result.exit_code == 0, result.output
+    assert "T12: 1 fix round, 0 failures" in result.output

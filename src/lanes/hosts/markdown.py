@@ -3,7 +3,8 @@
 import re
 from pathlib import Path
 
-from lanes.hosts import TicketNotFound
+from lanes.hosts import HostError, TicketNotFound
+from lanes.models import PullRequest
 
 # `**Blocked by:** 01, 02` near the top, or a `## Blocked by` section listing them.
 _BLOCKED_LINE = re.compile(r"^\**Blocked by:\**[ \t]*(.*)$", re.MULTILINE | re.IGNORECASE)
@@ -64,6 +65,16 @@ class MarkdownHost:
 
     def comments(self, ref: str) -> list[str]:
         return [text.removesuffix("\n") for text in self._parts(ref)[1:]]
+
+    def pull_requests(self) -> list[PullRequest]:
+        """Markdown tickets live offline, with no pull requests."""
+        return []
+
+    def ci_log(self, ref: str) -> str:
+        raise HostError("markdown tickets have no pull requests")
+
+    def label_pull_request(self, ref: str, label: str) -> None:
+        raise HostError("markdown tickets have no pull requests")
 
     def _parts(self, ref: str) -> list[str]:
         """The ticket file split into the ticket itself and each comment after it."""

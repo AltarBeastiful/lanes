@@ -6,7 +6,7 @@ from pathlib import Path
 
 from pydantic import TypeAdapter
 
-from lanes.models import Event, LogRecord
+from lanes.models import Event, LaneCache, LogRecord
 from lanes.store import upgrade
 
 _RECORD: TypeAdapter[LogRecord] = TypeAdapter(LogRecord)
@@ -23,6 +23,7 @@ def state_directory(repo: Path) -> Path:
 class FileStore:
     def __init__(self, directory: Path) -> None:
         self._log = directory / "events.jsonl"
+        self._cache = directory / "cache.json"
 
     def append(self, event: Event) -> None:
         self._log.parent.mkdir(parents=True, exist_ok=True)
@@ -35,3 +36,19 @@ class FileStore:
         lines = self._log.read_text(encoding="utf-8").splitlines()
         records = [_RECORD.validate_json(line) for line in lines if line.strip()]
         return upgrade(records)
+
+    def session(self, ticket: str) -> str | None:
+        return self._read_cache().sessions.get(ticket)
+
+    def remember_session(self, ticket: str, session_id: str) -> None:
+        cache = self._read_cache()
+        cache.sessions[ticket] = session_id
+        self._cache.parent.mkdir(parents=True, exist_ok=True)
+        self._cache.write_text(cache.model_dump_json(indent=2) + "\n", encoding="utf-8")
+
+    def _read_cache(self) -> LaneCache:
+        """The cache is rebuildable, so a missing or unreadable one is an empty one."""
+        try:
+            return LaneCache.model_validate_json(self._cache.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return LaneCache()

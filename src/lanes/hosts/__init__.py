@@ -2,6 +2,8 @@
 
 from typing import Protocol
 
+from lanes.models import PullRequest
+
 
 class HostError(Exception):
     """The host refused or failed a call; the message says why, in the host's words."""
@@ -44,4 +46,16 @@ class HostAdapter(Protocol):
 
     def comments(self, ref: str) -> list[str]:
         """The comments on the ticket `ref`, oldest first."""
+        ...
+
+    def pull_requests(self) -> list[PullRequest]:
+        """Every open pull request whose body closes a ticket (`Closes #<n>`): the durable anchor of a lane."""
+        ...
+
+    def ci_log(self, ref: str) -> str:
+        """The output of the failed CI checks on the pull request `ref`'s latest runs, as plain lines."""
+        ...
+
+    def label_pull_request(self, ref: str, label: str) -> None:
+        """Put `label` on the pull request `ref`, keeping its other labels."""
         ...

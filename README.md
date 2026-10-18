@@ -7,6 +7,7 @@ uv run lanes init      # in the target repository: config, hotspots, gates, runn
 uv run lanes check 42                      # a GitHub issue, or a markdown ticket's number or path
 uv run lanes fail 12 "missed null check"   # log a defect you caught at merge in ticket 12's lane
 uv run lanes report                        # first-pass acceptance, fix rounds and defects, per route and tier
+uv run lanes tick                          # act once on each lane: resume a red one with its failures
 ```
 
 `lanes init` asks for the host, tracker, test command, lint command, N, whether Codex may read the code and the reviewers per tier. It writes `.lanes/lanes.toml`, `.lanes/hotspots.txt`, the gates and the pytest runner, the implementer and reviewer agents in `.claude/agents/` and their hooks in `.lanes/hooks/`, registers the repository in `~/.config/lanes/repos.toml`, and warns if Claude Code's workspace trust hasn't been accepted for it. It refuses a test command other than pytest. Commit what it wrote under the `allow-config` label, then turn on branch protection requiring `gates` and an up-to-date branch by hand.
@@ -20,6 +21,17 @@ Both trackers sit behind the `HostAdapter` port, and `tests/test_host_contract.p
 ## Event log
 
 `LaneStore` is the only code that touches the per-repository state directory, `$XDG_STATE_HOME/lanes/<repo>-<hash>/` (`~/.local/state` when that is unset), so nothing Lanes logs lands in the repository. The log, `events.jsonl`, is append-only: one JSON record per line, each named by its `event` and `version`, and older versions are upgraded when read. `lanes fail` appends a `failure_logged` record carrying the ticket's route and tier. `lanes report` groups lanes and defects by the route and tier each lane was dispatched with, falling back to the ticket's own for a lane Lanes never dispatched, and names the five lanes with the most fix rounds and failures, worth a `/retro`.
+
+## Tick
+
+`lanes tick` reads each lane's facts from the pull request host and agent view and acts on it at most once. A lane is an open pull request whose body carries `Closes #<n>`; its session is the one the state directory's cache maps it to, else the newest session named `T<n>`. So far the control table has these rows:
+
+- CI red on a commit no fix round was spent on, fewer than two rounds spent: resume the session in the background with `--name T<n>` and a prompt of at most 200 lines, the gates' problem lines (failing tests among them) first, then the first error lines from the failed job's log. Log a `fix_round` event carrying the commit. When the resume starts a copy under a new session ID, the cache maps the lane to the copy.
+- CI red after two fix rounds: label the pull request `needs-human` and resume nothing more.
+- CI red on a commit a round was already spent on: wait for the session to push.
+- Anything else, or a pull request already labelled `needs-human`: leave the lane alone.
+
+CI is the newest run of each check on the head commit, so a failed run that a re-run has passed no longer counts. Sessions are resumed by their full session ID, from their own working directory.
 
 ## Gates
 
