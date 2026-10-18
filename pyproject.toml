@@ -1,0 +1,33 @@
+[project]
+name = "lanes"
+version = "0.1.0"
+description = "Takes a refined ticket to a reviewed, mergeable pull request, with code deciding what runs next"
+readme = "README.md"
+authors = [
+    { name = "Rémi Benoit", email = "r3m1.benoit@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8,<9",
+    "pydantic>=2,<3",
+]
+
+[project.scripts]
+lanes = "lanes.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = [
+    "mypy>=2.4.0",
+    "pytest>=9.1.1",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+strict = true
+plugins = ["pydantic.mypy"]
