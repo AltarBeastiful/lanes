@@ -42,7 +42,7 @@ def check(ref: str) -> None:
 @main.command()
 @click.option("--force", is_flag=True, help="Overwrite installed files that differ from what init writes.")
 def init(force: bool) -> None:
-    """Set up the current repository for Lanes: config, hotspots, gates and runner."""
+    """Set up the current repository for Lanes: config, hotspots, gates, runner, agents and hooks."""
     repo = _git_root()
     host = click.prompt("Host for pull requests", type=_choice(Host), default="github")
     tracker = click.prompt("Tracker for tickets", type=_choice(Tracker), default="github")
@@ -55,6 +55,7 @@ def init(force: bool) -> None:
             err=True,
         )
         sys.exit(2)
+    lint_command = click.prompt("Lint command, run before a lane stops (blank for none)", default="", show_default=False)
     max_lanes = click.prompt("Lanes running at once (N)", type=click.IntRange(min=1), default=2)
     codex_allowed = click.confirm("May Codex read this repository's code?", default=False)
     second_reviewer = "codex" if codex_allowed else "claude-adversarial"
@@ -76,6 +77,7 @@ def init(force: bool) -> None:
         host=host,
         tracker=tracker,
         test_command=test_command,
+        lint_command=lint_command,
         max_lanes=max_lanes,
         codex_allowed=codex_allowed,
         reviewers=TierReviewers(**reviewers),
@@ -93,7 +95,7 @@ def init(force: bool) -> None:
             "started from the timer will exit with 'Workspace not trusted'. Run `claude` here once and accept it.",
             err=True,
         )
-    click.echo("Wrote .lanes/ and .github/workflows/gates.yml; commit them under the allow-config label.")
+    click.echo("Wrote .lanes/, .claude/agents/ and .github/workflows/gates.yml; commit them under the allow-config label.")
 
 
 def _git_root() -> Path:

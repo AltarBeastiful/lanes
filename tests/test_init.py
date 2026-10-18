@@ -5,8 +5,10 @@ import subprocess
 import tomllib
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 from click.testing import CliRunner, Result
 
 from lanes.cli import main
@@ -14,12 +16,12 @@ from lanes.models import LanesConfig, TierReviewers
 
 Init = Callable[..., Result]
 
-# host, tracker, test command, N, Codex allowed, then reviewers for trivial, small, medium and high.
-DEFAULTS = ["github", "github", "pytest", "2", "y", "", "", "", ""]
+# host, tracker, test command, lint command, N, Codex allowed, then reviewers for trivial, small, medium and high.
+DEFAULTS = ["github", "github", "pytest", "", "2", "y", "", "", "", ""]
 
 
 def answers(**changed: str) -> str:
-    order = ["host", "tracker", "test_command", "max_lanes", "codex", "trivial", "small", "medium", "high"]
+    order = ["host", "tracker", "test_command", "lint_command", "max_lanes", "codex", "trivial", "small", "medium", "high"]
     given = dict(zip(order, DEFAULTS)) | changed
     return "".join(f"{given[name]}\n" for name in order)
 
@@ -64,11 +66,47 @@ def test_init_writes_the_config_hotspots_gates_and_pytest_runner(repo: Path, ini
     assert "python .lanes/gates.py" in (repo / ".github" / "workflows" / "gates.yml").read_text()
 
 
+def frontmatter(path: Path) -> dict[str, Any]:
+    found: dict[str, Any] = yaml.safe_load(path.read_text().split("---\n")[1])
+    return found
+
+
+def test_init_writes_the_implementer_and_reviewer_agents_and_their_hooks(repo: Path, init: Init) -> None:
+    result = init()
+
+    assert result.exit_code == 0, result.output
+    for hook in ("guard.py", "quick-check.py"):
+        assert (repo / ".lanes" / "hooks" / hook).stat().st_mode & 0o111, hook
+    assert frontmatter(repo / ".claude" / "agents" / "reviewer.md")["name"] == "reviewer"
+    implementer = frontmatter(repo / ".claude" / "agents" / "implementer.md")
+    assert implementer["name"] == "implementer"
+    [guard] = implementer["hooks"]["PreToolUse"]
+    assert {"Bash", "Edit", "Write"} <= set(guard["matcher"].split("|"))
+    assert guard["hooks"] == [
+        {"type": "command", "command": '"$CLAUDE_PROJECT_DIR"/.lanes/hooks/guard.py', "onFailure": "block"}
+    ]
+    [quick_check] = implementer["hooks"]["Stop"]
+    assert quick_check["hooks"][0]["command"] == '"$CLAUDE_PROJECT_DIR"/.lanes/hooks/quick-check.py'
+
+
+def test_the_guard_blocks_when_its_script_is_missing(repo: Path, init: Init) -> None:
+    init()
+    [guard] = frontmatter(repo / ".claude" / "agents" / "implementer.md")["hooks"]["PreToolUse"][0]["hooks"]
+    (repo / ".lanes" / "hooks" / "guard.py").unlink()
+
+    missing = subprocess.run(guard["command"], shell=True, env={"CLAUDE_PROJECT_DIR": str(repo)}, input="{}", text=True)
+
+    # Exit 2 would be a deliberate deny; any other failure blocks only through onFailure.
+    assert missing.returncode not in (0, 2)
+    assert guard["onFailure"] == "block"
+
+
 def test_written_config_round_trips_through_the_config_model(repo: Path, init: Init) -> None:
     result = init(
         answers(
             tracker="markdown",
             test_command='uv run pytest -k "not slow"',
+            lint_command="uv run ruff check",
             max_lanes="3",
             small="none",
             high="codex, claude-max, claude-adversarial",
@@ -81,6 +119,7 @@ def test_written_config_round_trips_through_the_config_model(repo: Path, init: I
         host="github",
         tracker="markdown",
         test_command='uv run pytest -k "not slow"',
+        lint_command="uv run ruff check",
         max_lanes=3,
         codex_allowed=True,
         reviewers=TierReviewers(

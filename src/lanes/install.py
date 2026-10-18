@@ -19,6 +19,10 @@ INSTALLED = [
     ("gates/gates.py", ".lanes/gates.py", False),
     ("runner/pytest", ".lanes/runner", True),
     ("gates/gates.yml", ".github/workflows/gates.yml", False),
+    ("agents/implementer.md", ".claude/agents/implementer.md", False),
+    ("agents/reviewer.md", ".claude/agents/reviewer.md", False),
+    ("hooks/guard.py", ".lanes/hooks/guard.py", True),
+    ("hooks/quick-check.py", ".lanes/hooks/quick-check.py", True),
 ]
 
 RUNNER_CONTRACT = "https://github.com/AltarBeastiful/lanes/blob/main/docs/adr/0002-runner-script.md"

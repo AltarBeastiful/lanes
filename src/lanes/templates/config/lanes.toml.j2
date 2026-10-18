@@ -8,6 +8,9 @@ tracker = {{ config.tracker | toml }}
 # the whole suite through .lanes/runner.
 test_command = {{ config.test_command | toml }}
 
+# What the implementer's quick checks run as lint before a lane stops; empty for none.
+lint_command = {{ config.lint_command | toml }}
+
 # At most this many lanes run at once in this repository.
 max_lanes = {{ config.max_lanes | toml }}
 

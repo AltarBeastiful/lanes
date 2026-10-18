@@ -3,12 +3,39 @@
 Takes a refined ticket to a reviewed, mergeable pull request, with code (never a model) deciding what runs next. See `GLOSSARY.md` and `docs/adr/`.
 
 ```bash
-uv run lanes init      # in the target repository: config, hotspots, gates and runner
+uv run lanes init      # in the target repository: config, hotspots, gates, runner, agents and hooks
 uv run lanes check .scratch/<feature>/issues/01-<slug>.md
 ```
 
-`lanes init` asks for the host, tracker, test command, N, whether Codex may read the code and the reviewers per tier. It writes `.lanes/lanes.toml`, `.lanes/hotspots.txt`, the gates and the pytest runner, registers the repository in `~/.config/lanes/repos.toml`, and warns if Claude Code's workspace trust hasn't been accepted for it. It refuses a test command other than pytest. Commit what it wrote under the `allow-config` label, then turn on branch protection requiring `gates` and an up-to-date branch by hand.
+`lanes init` asks for the host, tracker, test command, lint command, N, whether Codex may read the code and the reviewers per tier. It writes `.lanes/lanes.toml`, `.lanes/hotspots.txt`, the gates and the pytest runner, the implementer and reviewer agents in `.claude/agents/` and their hooks in `.lanes/hooks/`, registers the repository in `~/.config/lanes/repos.toml`, and warns if Claude Code's workspace trust hasn't been accepted for it. It refuses a test command other than pytest. Commit what it wrote under the `allow-config` label, then turn on branch protection requiring `gates` and an up-to-date branch by hand.
 
 ## Gates
 
-The `gates` check runs `.lanes/gates.py` on every pull request: no test deleted, skipped or xfailed against the base, no CI, coverage or lint config change without the `allow-config` label, no failure that is new against the base, and no vacuous test: each new test is run on the base and must fail there. A refactor declares the tests that prove it preserved behaviour as `behaviour: preserved <test-id>` lines in the pull request body; those must pass on both commits instead. A new test the runner can't run on the base is reported inconclusive for the reviewer, not failed. It reaches the tests only through `.lanes/runner` (ADR-0002). `.lanes/` holds the copies `lanes init` installs from `src/lanes/templates/`; `tests/test_gates.py` proves them against the seeded branches in `examples/fixture-repo/`.
+The `gates` check runs `.lanes/gates.py` on every pull request: no test deleted, skipped or xfailed against the base, no CI, coverage, lint or Lanes config change (`.github/`, `.lanes/`, `.claude/`, lint and test tool settings) without the `allow-config` label, no failure that is new against the base, and no vacuous test: each new test is run on the base and must fail there. A refactor declares the tests that prove it preserved behaviour as `behaviour: preserved <test-id>` lines in the pull request body; those must pass on both commits instead. A new test the runner can't run on the base is reported inconclusive for the reviewer, not failed. It reaches the tests only through `.lanes/runner` (ADR-0002). `.lanes/` holds the copies `lanes init` installs from `src/lanes/templates/`; `tests/test_gates.py` proves them against the seeded branches in `examples/fixture-repo/`.
+
+## Implementer lanes
+
+`.claude/agents/implementer.md` is the agent each lane runs as. It skips `/implement`'s closing review, announces new shared names to the other `T*` sessions, writes `.lanes-blocked-on` and stops when it needs a contract nothing merged provides, and otherwise ends by pushing its branch and opening a draft pull request whose body carries `Closes #<n>`. `.claude/agents/reviewer.md` is the read-only reviewer `tick` runs once CI is green.
+
+Two hooks live in the implementer's frontmatter, so they run only in lanes and never in your own interactive sessions:
+
+- `.lanes/hooks/guard.py` (PreToolUse, `onFailure: "block"`) denies writes to CI, coverage, lint and Lanes config (the same paths the gates protect) and pushes to the default branch. A guard that crashes or is missing blocks the call too.
+- `.lanes/hooks/quick-check.py` (Stop) runs `lint_command` and the test files the lane changed through `.lanes/runner`, and sends failures back at most three times in a row before leaving them to CI.
+
+The guard stops an honest lane going the wrong way; it is not a sandbox. It reads shell commands word by word (including `bash -c`, `eval` and `env` wrappers) and denies any that names config unless it only reads it, but a script that writes config without naming it gets through, and the gates still catch the change. The quick checks run only test files the lane changed, not tests affected by a source change; the full suite runs in CI. Whether the implementer's hooks also cover subagents it starts has not been checked.
+
+### Manual check: the guard fires in a background lane
+
+Frontmatter hooks only run once workspace trust has been accepted for the folder (a `-p` session doesn't count), so this is checked by hand rather than in CI. From a throwaway worktree of a trusted repository that has the agent and hooks installed:
+
+```bash
+git worktree add -b guard-check ../lanes-guard-check && cd ../lanes-guard-check
+claude --bg --agent implementer --name T0-guard-check --permission-mode acceptEdits \
+  "Test of your guard, not a ticket. (1) Edit .github/workflows/gates.yml, replacing 'runs-on: ubuntu-latest' with 'runs-on: ubuntu-24.04'. (2) Run: git push --dry-run origin HEAD:main. Report what each tool returned; don't retry."
+claude logs <id>     # both calls end in "PreToolUse:... hook error: ... Lanes guard: ..."
+git status --short   # .github/ unchanged
+```
+
+Put the prompt before any variadic option such as `--allowedTools`, or the option swallows it. Then run the same edit in an interactive `claude` session in that worktree: it goes through, because no project setting carries the hooks.
+
+Checked on 18 Oct 2026 with Claude Code 2.1.302: both calls were denied with the guard's message, `.github/` was unchanged, and the Stop hook ran when the session stopped. The frontmatter hooks fire under `--bg --agent`, so the project-settings fallback is not needed. To send a follow-up to such a session, pass the full session ID to `--resume`: a short ID opens the resume picker in the background and the session sits blocked.

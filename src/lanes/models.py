@@ -45,6 +45,7 @@ class LanesConfig(BaseModel):
     host: Host
     tracker: Tracker
     test_command: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+    lint_command: Annotated[str, StringConstraints(strip_whitespace=True)] = ""
     max_lanes: PositiveInt
     codex_allowed: bool
     reviewers: TierReviewers

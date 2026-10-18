@@ -27,8 +27,9 @@ RUNNER = Path(".lanes/runner")
 FAILED = ("failed", "error")
 ALLOW_CONFIG = "allow-config"
 PRESERVED = re.compile(r"^\s*behaviour: preserved\s+(.+?)\s*$", re.MULTILINE)
-# CI, coverage and lint config: changing any of it needs the allow-config label.
-CONFIG_DIRS = [".github/", ".lanes/"]
+# CI, coverage, lint and Lanes config, the implementer agent and its hooks included:
+# changing any of it needs the allow-config label.
+CONFIG_DIRS = [".claude/", ".github/", ".lanes/"]
 CONFIG_NAMES = [
     ".coveragerc",
     ".flake8",

@@ -8,6 +8,9 @@ tracker = "github"
 # the whole suite through .lanes/runner.
 test_command = "uv run pytest"
 
+# What the implementer's quick checks run as lint before a lane stops; empty for none.
+lint_command = "uv run mypy src tests"
+
 # At most this many lanes run at once in this repository.
 max_lanes = 2
 

@@ -240,6 +240,10 @@ def test_runner_that_cannot_run_the_base_fails_the_gate(tmp_path: Path) -> None:
         (".lanes/gates.py", "gates/gates.py"),
         (".lanes/runner", "runner/pytest"),
         (".github/workflows/gates.yml", "gates/gates.yml"),
+        (".claude/agents/implementer.md", "agents/implementer.md"),
+        (".claude/agents/reviewer.md", "agents/reviewer.md"),
+        (".lanes/hooks/guard.py", "hooks/guard.py"),
+        (".lanes/hooks/quick-check.py", "hooks/quick-check.py"),
     ],
 )
 def test_lanes_runs_the_gates_it_ships(installed: str, template: str) -> None:
