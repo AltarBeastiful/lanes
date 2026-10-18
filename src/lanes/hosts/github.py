@@ -6,10 +6,19 @@ import subprocess
 from typing import Any
 
 from lanes.hosts import HostError, TicketNotFound
+from lanes.models import CI, PullRequest
 
 _NOT_FOUND = "Could not resolve to an issue"
 _LABEL_NOT_FOUND = re.compile(r"'.*' not found$")
 _ISSUE_URL = re.compile(r"https://github\.com/([^/]+/[^/]+)/issues/(\d+)")
+_CLOSES = re.compile(r"^Closes #(\d+)\b", re.MULTILINE | re.IGNORECASE)
+_JOB_URL = re.compile(r"/actions/runs/\d+/job/(\d+)")
+_CHECKS = "statusCheckRollup"
+_RED = {"FAILURE", "TIMED_OUT", "STARTUP_FAILURE", "ERROR"}
+_GREEN = {"SUCCESS", "NEUTRAL", "SKIPPED"}
+# `gh run view --log-failed` puts the job, the step and a timestamp before each line.
+_LOG_PREFIX = re.compile(r"^[^\t]*\t[^\t]*\t\ufeff?(?:\d{4}-\d\d-\d\dT[\d:.]+Z ?)?")
+_ANSI = re.compile(r"\x1b\[[0-9;]*m")
 
 
 class GitHubHost:
@@ -38,13 +47,16 @@ class GitHubHost:
     def add_label(self, ref: str, label: str) -> None:
         """Creates the label first when the repository doesn't have it yet."""
         repo, number = self._locate(ref)
+        self._label("issue", number, repo, label)
+
+    def _label(self, kind: str, number: str, repo: str, label: str) -> None:
         try:
-            self._gh("issue", "edit", number, "--repo", repo, "--add-label", label)
+            self._gh(kind, "edit", number, "--repo", repo, "--add-label", label)
         except HostError as error:
             if not _LABEL_NOT_FOUND.search(str(error).splitlines()[0]):
                 raise
             self._gh("label", "create", label, "--repo", repo)
-            self._gh("issue", "edit", number, "--repo", repo, "--add-label", label)
+            self._gh(kind, "edit", number, "--repo", repo, "--add-label", label)
 
     def remove_label(self, ref: str, label: str) -> None:
         # gh refuses to remove a label the repository doesn't have, so only remove one the issue carries.
@@ -58,6 +70,30 @@ class GitHubHost:
 
     def comments(self, ref: str) -> list[str]:
         return [comment["body"] for comment in self._issue(ref, "comments")["comments"]]
+
+    def pull_requests(self) -> list[PullRequest]:
+        fields = f"number,body,headRefOid,labels,{_CHECKS}"
+        listed = json.loads(self._gh("pr", "list", "--repo", self._here(), "--state", "open", "--limit", "200", "--json", fields))
+        return [
+            PullRequest(
+                ref=str(pr["number"]),
+                ticket=closes.group(1),
+                head=pr["headRefOid"],
+                ci=_ci(_latest(pr[_CHECKS])),
+                labels=[label["name"] for label in pr["labels"]],
+            )
+            for pr in listed
+            if (closes := _CLOSES.search(pr["body"] or ""))
+        ]
+
+    def ci_log(self, ref: str) -> str:
+        repo, number = self._here(), ref.removeprefix("#")
+        checks = json.loads(self._gh("pr", "view", number, "--repo", repo, "--json", _CHECKS))[_CHECKS]
+        jobs = [job.group(1) for check in _latest(checks) if _state(check) in _RED and (job := _JOB_URL.search(_url(check)))]
+        return "".join(_plain(self._gh("run", "view", "--repo", repo, "--job", job, "--log-failed")) for job in jobs)
+
+    def label_pull_request(self, ref: str, label: str) -> None:
+        self._label("pr", ref.removeprefix("#"), self._here(), label)
 
     def _issue(self, ref: str, fields: str) -> dict[str, Any]:
         repo, number = self._locate(ref)
@@ -88,3 +124,42 @@ class GitHubHost:
             message = done.stderr.strip() or f"gh {' '.join(args[:2])} exited {done.returncode}"
             raise (TicketNotFound if _NOT_FOUND in message else HostError)(message)
         return done.stdout
+
+
+def _latest(checks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The newest run of each check: an older failed run a re-run has since passed no longer counts."""
+    newest: dict[tuple[str, str], dict[str, Any]] = {}
+    for check in sorted(checks, key=lambda check: check.get("startedAt") or ""):
+        newest[check.get("workflowName") or "", check.get("name") or check.get("context") or ""] = check
+    return list(newest.values())
+
+
+def _state(check: dict[str, Any]) -> str:
+    """A check run's conclusion, or a commit status's state; empty while a check run is still going."""
+    return str(check.get("conclusion") or check.get("state") or "")
+
+
+def _url(check: dict[str, Any]) -> str:
+    return str(check.get("detailsUrl") or check.get("targetUrl") or "")
+
+
+def _ci(checks: list[dict[str, Any]]) -> CI:
+    states = [_state(check) for check in checks]
+    if any(state in _RED for state in states):
+        return "failed"
+    return "passed" if states and all(state in _GREEN for state in states) else "pending"
+
+
+def _plain(log: str) -> str:
+    """The lines a failed job printed, without GitHub's prefixes, colours, step headers or annotations."""
+    lines: list[str] = []
+    in_group = False
+    for raw in log.splitlines():
+        line = _ANSI.sub("", _LOG_PREFIX.sub("", raw, count=1))
+        if line.startswith("##[group]"):
+            in_group = True
+        elif line.startswith("##[endgroup]"):
+            in_group = False
+        elif not in_group and not line.startswith("##["):
+            lines.append(line + "\n")
+    return "".join(lines)

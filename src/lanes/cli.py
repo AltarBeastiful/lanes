@@ -8,7 +8,9 @@ from typing import Any, get_args
 
 import click
 
-from lanes import agents, install, registry, report as reports, ticket
+from lanes import install, registry, report as reports, ticket, tick as ticks
+from lanes.agents import AgentError
+from lanes.agents.claude import ClaudeAgents, workspace_trusted
 from lanes.hosts import HostAdapter, HostError
 from lanes.hosts.github import GitHubHost
 from lanes.hosts.markdown import MarkdownHost
@@ -31,6 +33,18 @@ def _host() -> HostAdapter:
         if tracker == "github":
             return GitHubHost()
     return MarkdownHost(Path.cwd())
+
+
+def _pull_request_host() -> HostAdapter:
+    """The host `.lanes/lanes.toml` names for pull requests; there is none without it."""
+    config = _git_root() / ".lanes" / "lanes.toml"
+    if not config.is_file():
+        command = click.get_current_context().info_name
+        click.echo(f"lanes {command}: no .lanes/lanes.toml names the pull request host; run lanes init", err=True)
+        sys.exit(2)
+    LanesConfig.model_validate(tomllib.loads(config.read_text(encoding="utf-8")))
+    # GitHub is the only pull request host the config allows so far.
+    return GitHubHost()
 
 
 def _store() -> LaneStore:
@@ -83,6 +97,17 @@ def report() -> None:
 
 
 @main.command()
+def tick() -> None:
+    """Act once on each lane: resume a red one with its failures, or bring in a person after two fix rounds."""
+    try:
+        for line in ticks.run(_pull_request_host(), _store(), ClaudeAgents()):
+            click.echo(line)
+    except (HostError, AgentError) as error:
+        click.echo(f"lanes tick: {error}", err=True)
+        sys.exit(2)
+
+
+@main.command()
 @click.option("--force", is_flag=True, help="Overwrite installed files that differ from what init writes.")
 def init(force: bool) -> None:
     """Set up the current repository for Lanes: config, hotspots, gates, runner, agents and hooks."""
@@ -132,7 +157,7 @@ def init(force: bool) -> None:
         sys.exit(2)
     install.install(repo, config)
     registry.register(repo)
-    if not agents.workspace_trusted(repo):
+    if not workspace_trusted(repo):
         click.echo(
             f"warning: Claude Code's workspace trust has not been accepted for {repo}, so lanes "
             "started from the timer will exit with 'Workspace not trusted'. Run `claude` here once and accept it.",

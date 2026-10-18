@@ -2,7 +2,7 @@
 
 from typing import Protocol
 
-from lanes.models import Event, FailureLogged, FailureLoggedV1, LogRecord
+from lanes.models import Event, FailureLogged, FailureLoggedV1, FixRound, FixRoundV1, LogRecord
 
 
 class LaneStore(Protocol):
@@ -12,6 +12,14 @@ class LaneStore(Protocol):
 
     def events(self) -> list[Event]:
         """Every logged event in the order it was appended, older versions upgraded to the current ones."""
+        ...
+
+    def session(self, ticket: str) -> str | None:
+        """The session ID the lane for `ticket` last ran in, if the cache knows it."""
+        ...
+
+    def remember_session(self, ticket: str, session_id: str) -> None:
+        """Map the lane for `ticket` to `session_id`, replacing any earlier one."""
         ...
 
 
@@ -24,4 +32,6 @@ def _upgrade(record: LogRecord) -> Event:
     if isinstance(record, FailureLoggedV1):
         # v1 never knew the route and tier; the report takes them from the lane's dispatch instead.
         return FailureLogged(at=record.at, ticket=record.ticket, route=None, tier=None, what=record.what)
+    if isinstance(record, FixRoundV1):
+        return FixRound(at=record.at, ticket=record.ticket, commit=None)
     return record

@@ -99,9 +99,19 @@ class LaneDispatched(_Event):
     tier: Tier
 
 
-class FixRound(_Event):
+class FixRoundV1(_Event):
+    """A fix round, before the event carried the commit it was spent on."""
+
     event: Literal["fix_round"] = "fix_round"
     version: Literal[1] = 1
+
+
+class FixRound(_Event):
+    """One resume of a lane, spent on the head commit CI or a verdict found wanting; None only when upgraded from v1."""
+
+    event: Literal["fix_round"] = "fix_round"
+    version: Literal[2] = 2
+    commit: str | None
 
 
 class FailureLoggedV1(_Event):
@@ -133,9 +143,44 @@ def _event_tag(record: Any) -> str:
 
 LogRecord = Annotated[
     Annotated[LaneDispatched, Tag("lane_dispatched/1")]
-    | Annotated[FixRound, Tag("fix_round/1")]
+    | Annotated[FixRoundV1, Tag("fix_round/1")]
+    | Annotated[FixRound, Tag("fix_round/2")]
     | Annotated[FailureLoggedV1, Tag("failure_logged/1")]
     | Annotated[FailureLogged, Tag("failure_logged/2")],
     Discriminator(_event_tag),
 ]
 """Any record the log may hold, of any version."""
+
+
+class LaneCache(BaseModel):
+    """The rebuildable part of the state directory: which session each lane last ran in, by ticket (ADR-0001)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    sessions: dict[str, str] = {}
+
+
+CI = Literal["pending", "passed", "failed"]
+
+
+class PullRequest(BaseModel):
+    """An open pull request that closes a ticket, as the host reports it."""
+
+    ref: str
+    ticket: str
+    head: str
+    ci: CI
+    labels: list[str]
+
+
+class Session(BaseModel):
+    """A Claude Code session as `claude agents --json --all` lists it; agent view is a preview, so new fields are ignored."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
+    id: str | None = None
+    session_id: str = Field(alias="sessionId")
+    name: str = ""
+    state: str | None = None
+    cwd: str
+    started_at: int = Field(alias="startedAt", default=0)
