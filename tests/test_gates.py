@@ -39,7 +39,11 @@ def build_fixture(repo: Path) -> None:
     commit_all(repo, "main")
     for branch in sorted((FIXTURE / "branches").iterdir()):
         git(repo, "checkout", "-q", "-b", branch.name, "main")
-        shutil.copytree(branch, repo, dirs_exist_ok=True, ignore=shutil.ignore_patterns("DELETED"))
+        # Fresh mtimes: a fresh checkout gives every file one mtime, and git's stat
+        # cache would miss an overlay of the same size as the file it replaces.
+        shutil.copytree(
+            branch, repo, dirs_exist_ok=True, copy_function=shutil.copy, ignore=shutil.ignore_patterns("DELETED")
+        )
         deleted = branch / "DELETED"
         for path in deleted.read_text().split() if deleted.exists() else []:
             (repo / path).unlink()
