@@ -368,31 +368,50 @@ def test_a_red_commit_already_resumed_is_left_to_the_session(world: World) -> No
     assert len(logged(world)) == 1
 
 
-def test_after_two_fix_rounds_the_pull_request_needs_a_human_and_is_not_resumed(world: World) -> None:
+def test_after_two_fix_rounds_the_pull_request_needs_a_human_who_is_asked_with_the_failures(world: World) -> None:
     for head in ("c0ffee1", "c0ffee2"):
         world.red_pr(head=head, log=github_log(["new failure: tests/test_calc.py::test_add"]))
         tick()
-    world.red_pr(head="c0ffee3", log=github_log(["new failure: tests/test_calc.py::test_add"]))
+    world.red_pr(head="c0ffee3", log=github_log(["E   assert 2 == 3", "new failure: tests/test_calc.py::test_mean"]))
 
     result = tick()
 
     assert result.exit_code == 0, result.output
-    assert len(world.resumes()) == 2
-    assert [event["commit"] for event in logged(world)] == ["c0ffee1", "c0ffee2"]
+    [*_, ask] = world.resumes()
+    assert len(world.resumes()) == 3
+    assert "AskUserQuestion" in ask["prompt"]
+    assert "CI is red on #31 after 2 fix rounds" in ask["prompt"]
+    assert "tests/test_calc.py::test_mean" in ask["prompt"] and "E   assert 2 == 3" in ask["prompt"]
+    assert [(event["event"], event["commit"]) for event in logged(world)] == [
+        ("fix_round", "c0ffee1"), ("fix_round", "c0ffee2"), ("human_asked", "c0ffee3")
+    ]
     assert ["pr", "edit", "31", "--repo", "owner/repo", "--add-label", "needs-human"] in world.gh_calls()
-    assert "needs-human" in result.output
+    assert "needs-human" in result.output and "asked you" in result.output
 
 
-def test_a_lane_that_needs_a_human_is_left_alone(world: World) -> None:
-    world.red_pr(log=github_log(["new failure: tests/test_calc.py::test_add"]))
+def test_a_lane_labelled_needs_human_asks_me_once_with_its_failures_and_is_then_left_alone(world: World) -> None:
+    world.red_pr(head="c0ffee1", log=github_log(["new failure: tests/test_calc.py::test_add"]))
     labelled = world.load()
     labelled["prs"][0]["labels"] = [{"name": "needs-human"}]
     world.save(labelled)
 
-    result = tick()
+    asked = tick()
+    again = tick()
+    # Whoever answers may push with the label still on: the lane has asked already.
+    pushed = world.load()
+    pushed["prs"][0]["headRefOid"] = "c0ffee2"
+    world.save(pushed)
+    after_push = tick()
 
-    assert result.exit_code == 0, result.output
-    assert world.resumes() == []
+    assert asked.exit_code == 0, asked.output
+    [ask] = world.resumes()
+    assert (ask["session"], ask["name"]) == (SESSION, "T9")
+    assert "AskUserQuestion" in ask["prompt"]
+    assert "labelled needs-human" in ask["prompt"]
+    assert "tests/test_calc.py::test_add" in ask["prompt"]
+    assert "T9" in asked.output and "asked you" in asked.output
+    assert [(event["event"], event["why"]) for event in logged(world)] == [("human_asked", "needs_human")]
+    assert "T9" not in again.output and "T9" not in after_push.output
     assert not [call for call in world.gh_calls() if call[:2] == ["pr", "edit"]]
 
 
@@ -549,7 +568,10 @@ def test_blocking_findings_after_two_fix_rounds_need_a_human(world: World) -> No
     result = tick()
 
     assert result.exit_code == 0, result.output
-    assert len(world.resumes()) == 2
+    [*_, ask] = world.resumes()
+    assert len(world.resumes()) == 3
+    assert "Reviewers block on #31 after 2 fix rounds" in ask["prompt"]
+    assert "calc.py:3: mean([]) divides by zero (codex)" in ask["prompt"]
     assert ["pr", "edit", "31", "--repo", "owner/repo", "--add-label", "needs-human"] in world.gh_calls()
 
 
@@ -666,7 +688,7 @@ def test_a_conflict_resumes_the_lane_once_to_rebase_and_a_second_needs_a_human(w
     still = tick()
 
     assert first.exit_code == 0, first.output
-    [resume] = world.resumes()
+    [resume, _] = world.resumes()
     assert (resume["session"], resume["name"], resume["cwd"]) == (SESSION, "T9", str(world.worktree))
     assert "rebase on origin/main" in resume["prompt"]
     assert again.exit_code == 0, again.output
@@ -674,7 +696,30 @@ def test_a_conflict_resumes_the_lane_once_to_rebase_and_a_second_needs_a_human(w
     assert still.exit_code == 0, still.output
     assert ["pr", "edit", "31", "--repo", "owner/repo", "--add-label", "needs-human"] in world.gh_calls()
     assert "needs-human" in still.output
-    assert [event["event"] for event in logged(world)] == ["rebase_requested"]
+    assert [event["event"] for event in logged(world)] == ["rebase_requested", "human_asked"]
+
+
+def test_a_conflict_after_the_rebase_asks_me_once_through_the_lanes_session(world: World) -> None:
+    world.green_pr(head="c0ffee1")
+    world.branch(31, "conflict")
+    tick()
+    world.green_pr(head="c0ffee2")
+
+    asked = tick()
+    labelled = world.load()
+    labelled["prs"][0]["labels"] = [{"name": "needs-human"}]
+    world.save(labelled)
+    again = tick()
+
+    assert asked.exit_code == 0, asked.output
+    [_, ask] = world.resumes()
+    assert (ask["session"], ask["name"], ask["cwd"]) == (SESSION, "T9", str(world.worktree))
+    assert "AskUserQuestion" in ask["prompt"]
+    assert "still conflicts with main" in ask["prompt"] and "c0ffee2" in ask["prompt"]
+    assert "T9" in asked.output and "asked you" in asked.output
+    assert again.exit_code == 0, again.output
+    assert len(world.resumes()) == 2
+    assert "T9" not in again.output
 
 
 @pytest.mark.parametrize(
@@ -755,3 +800,84 @@ def test_with_the_state_directory_deleted_the_next_tick_finds_every_open_lane(wo
         SESSION, COPY, "bbbbbbbb-1111-2222-3333-444444444444"
     ]
     assert "T9" in result.output and "T12" in result.output
+
+
+BLOCKED_ON = "needs: #7\nwhy: calc.median needs the Stats type ticket 7 adds.\n"
+
+
+def test_a_blocked_lane_without_a_pull_request_asks_me_once_why_it_is_blocked(world: World) -> None:
+    blocked = world.worktree.parent / "T12"
+    blocked.mkdir()
+    (blocked / ".lanes-blocked-on").write_text(BLOCKED_ON)
+    sessions = world.load()
+    sessions["sessions"].append({"id": "bbbbbbbb", "sessionId": "bbbbbbbb-1111-2222-3333-444444444444", "name": "T12",
+                                 "state": "done", "cwd": str(blocked), "kind": "background", "startedAt": 2000})
+    world.save(sessions)
+
+    asked = tick()
+    again = tick()
+
+    assert asked.exit_code == 0, asked.output
+    [ask] = world.resumes()
+    assert (ask["session"], ask["name"], ask["cwd"]) == ("bbbbbbbb-1111-2222-3333-444444444444", "T12", str(blocked))
+    assert "AskUserQuestion" in ask["prompt"]
+    assert "blocked" in ask["prompt"] and "needs: #7" in ask["prompt"] and "Stats type" in ask["prompt"]
+    assert "T12" in asked.output and "asked you" in asked.output
+    assert [(event["event"], event["ticket"], event["why"], event["commit"]) for event in logged(world)] == [
+        ("human_asked", "12", "blocked", None)
+    ]
+    assert again.exit_code == 0, again.output
+    assert len(world.resumes()) == 1
+    # T9 has a session but no pull request and no blocked-on file: there is nothing to act on.
+    assert "T9" not in asked.output + again.output
+
+
+def test_a_blocked_lane_with_a_red_pull_request_asks_me_instead_of_spending_a_fix_round(world: World) -> None:
+    world.red_pr(head="c0ffee1", log=github_log(["new failure: tests/test_calc.py::test_add"]))
+    (world.worktree / ".lanes-blocked-on").write_text(BLOCKED_ON)
+
+    asked = tick()
+    again = tick()
+
+    assert asked.exit_code == 0, asked.output
+    [ask] = world.resumes()
+    assert "AskUserQuestion" in ask["prompt"] and "needs: #7" in ask["prompt"]
+    assert [(event["event"], event["why"], event["commit"]) for event in logged(world)] == [
+        ("human_asked", "blocked", "c0ffee1")
+    ]
+    assert again.exit_code == 0, again.output
+    assert len(world.resumes()) == 1
+
+
+def test_notify_cmd_runs_when_a_lane_asks_me_and_only_then(world: World) -> None:
+    notified = world.repo.parent / "notified.txt"
+    config = world.repo / ".lanes" / "lanes.toml"
+    config.write_text(f"notify_cmd = 'echo \"$LANES_LANE|$LANES_MESSAGE\" >> {notified}'\n" + config.read_text())
+    world.red_pr(head="c0ffee1", log=github_log(["new failure: tests/test_calc.py::test_add"]))
+
+    resumed = tick()
+    nothing_new = tick()
+    labelled = world.load()
+    labelled["prs"][0]["labels"] = [{"name": "needs-human"}]
+    world.save(labelled)
+    asked = tick()
+    again = tick()
+
+    assert resumed.exit_code == nothing_new.exit_code == asked.exit_code == again.exit_code == 0
+    [line] = notified.read_text().splitlines()
+    assert line == "T9|Lanes needs a person in lane T9: pull request #31 is labelled needs-human"
+
+
+def test_a_failing_notify_cmd_is_reported_and_the_question_still_asked(world: World) -> None:
+    config = world.repo / ".lanes" / "lanes.toml"
+    config.write_text("notify_cmd = 'exit 3'\n" + config.read_text())
+    world.red_pr(head="c0ffee1", log=github_log(["new failure: tests/test_calc.py::test_add"]))
+    labelled = world.load()
+    labelled["prs"][0]["labels"] = [{"name": "needs-human"}]
+    world.save(labelled)
+
+    result = tick()
+
+    assert result.exit_code == 0, result.output
+    assert len(world.resumes()) == 1
+    assert "asked you" in result.output and "notify_cmd exited 3" in result.output

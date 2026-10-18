@@ -62,6 +62,7 @@ class LanesConfig(BaseModel):
     tracker: Tracker
     test_command: Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
     lint_command: Annotated[str, StringConstraints(strip_whitespace=True)] = ""
+    notify_cmd: Annotated[str, StringConstraints(strip_whitespace=True)] = ""
     max_lanes: PositiveInt
     codex_allowed: bool
     reviewers: TierReviewers
@@ -158,6 +159,21 @@ class RebaseRequested(_Event):
     commit: str
 
 
+Ask = Literal["blocked", "fix_rounds", "conflict", "needs_human"]
+
+
+class HumanAsked(_Event):
+    """A lane resumed to ask the person why it needs them, logged so that the same case is asked about once.
+
+    `commit` is the pull request's head when asked, None for a lane that has opened no pull request yet.
+    """
+
+    event: Literal["human_asked"] = "human_asked"
+    version: Literal[1] = 1
+    why: Ask
+    commit: str | None
+
+
 class FailureLoggedV1(_Event):
     """A defect caught at merge, before the event carried the ticket's route and tier."""
 
@@ -176,7 +192,7 @@ class FailureLogged(_Event):
     what: str
 
 
-Event = LaneDispatched | FixRound | VerdictGiven | RebaseRequested | FailureLogged
+Event = LaneDispatched | FixRound | VerdictGiven | RebaseRequested | HumanAsked | FailureLogged
 
 
 def _event_tag(record: Any) -> str:
@@ -191,6 +207,7 @@ LogRecord = Annotated[
     | Annotated[FixRound, Tag("fix_round/2")]
     | Annotated[VerdictGiven, Tag("verdict/1")]
     | Annotated[RebaseRequested, Tag("rebase_requested/1")]
+    | Annotated[HumanAsked, Tag("human_asked/1")]
     | Annotated[FailureLoggedV1, Tag("failure_logged/1")]
     | Annotated[FailureLogged, Tag("failure_logged/2")],
     Discriminator(_event_tag),
