@@ -93,3 +93,13 @@ git status --short   # .github/ unchanged
 Put the prompt before any variadic option such as `--allowedTools`, or the option swallows it. Then run the same edit in an interactive `claude` session in that worktree: it goes through, because no project setting carries the hooks.
 
 Checked on 18 Oct 2026 with Claude Code 2.1.302: both calls were denied with the guard's message, `.github/` was unchanged, and the Stop hook ran when the session stopped. The frontmatter hooks fire under `--bg --agent`, so the project-settings fallback is not needed. To send a follow-up to such a session, pass the full session ID to `--resume`: a short ID opens the resume picker in the background and the session sits blocked.
+
+## Releasing
+
+Before tagging a release:
+
+1. The full suite passes: `uv run pytest`.
+2. `uv run mypy src tests` passes.
+3. The fixture smoke run passes with real agents and reviewers. This is not optional, and CI never runs it: `uv run python tests/smoke.py --sandbox owner/repo`.
+
+The smoke run needs a throwaway private GitHub repository with Actions on (`LANES_GITHUB_SANDBOX` names it when `--sandbox` is left out), SSH push access to it, and Claude Code's workspace trust accepted for its work directory, `~/.cache/lanes/smoke` by default (run `claude` there once). It replaces the sandbox's `main` with the fixture's `main/`, set up as `lanes init` would but with no registration and no timer. The lanes run in `auto` permission mode through the sandbox's `.claude/settings.json`. The run then opens the two tickets under `examples/fixture-repo/tickets/` as issues, `lanes check`s them, starts an implementer session `T<n>` on each in its own worktree, and runs `lanes tick` every minute until both pull requests are ready for review. Each step prints `<step>: ok`; the run exits 0 when every step passed, and otherwise exits 1 with `smoke failed at <step>: <why>`. It fails at `tick` when a pull request is labelled `needs-human` or both aren't ready within `--timeout` minutes (60). Either way, or on Ctrl-C, it then stops and removes the sessions and closes the pull requests, branches and issues it made, and fails at `cleanup` if any are left. `--keep` leaves them for a look, and the next run clears them. Until `lanes go` dispatches (#15), the run dispatches through the `Agents` port itself.
