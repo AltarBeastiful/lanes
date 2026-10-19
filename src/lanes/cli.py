@@ -158,7 +158,7 @@ def go(ref: str, route: Route | None, tier: Tier | None) -> None:
     its tier calls for."""
     config = _config()
     try:
-        for line in dispatch.dispatch(_host(), _store(), ClaudeAgents(), config, ref, _git_root(), route, tier):
+        for line in dispatch.start(_host(), _store(), ClaudeAgents(), config, ref, _git_root(), route, tier):
             click.echo(line)
     except dispatch.Refused as refused:
         for reason in refused.args:

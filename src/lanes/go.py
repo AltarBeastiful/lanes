@@ -23,7 +23,7 @@ class FetchFailed(Exception):
     """`git fetch origin` failed, so the lane would branch from what may be a stale `origin/HEAD`."""
 
 
-def dispatch(
+def start(
     host: HostAdapter,
     store: LaneStore,
     agents: Agents,
