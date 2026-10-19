@@ -19,3 +19,5 @@ Seeded cases the gates must catch, plus one clean branch they must pass. The har
 | `floors-divide` | floors `divide` with a test declared `behaviour: preserved` that fails on `main` | fails |
 
 Pull request bodies are passed by `tests/test_gates.py`. `test_mean_of_nothing_is_zero` already fails on `main`, so every branch, `clean` included, keeps one failure that must not count.
+
+`tickets/` holds the two canned tickets the release smoke test (`tests/smoke.py`, see the README's release checklist) takes from `check` to a ready pull request with real agents. Each is a small addition to `calc.py`, `# <title>` then the issue body.
