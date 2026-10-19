@@ -5,6 +5,7 @@ Takes a refined ticket to a reviewed, mergeable pull request, with code (never a
 ```bash
 uv run lanes init      # in the target repository: config, hotspots, gates, runner, agents and hooks
 uv run lanes check 42                      # a GitHub issue, or a markdown ticket's number or path
+uv run lanes go 42                         # start ticket 42's lane: a background session named T42
 uv run lanes fail 12 "missed null check"   # log a defect you caught at merge in ticket 12's lane
 uv run lanes report                        # first-pass acceptance, fix rounds and defects, per route and tier
 uv run lanes tick                          # act once on each lane: review, resume, update or mark ready
@@ -18,6 +19,10 @@ uv run lanes tick --all                    # the same in every registered reposi
 `lanes check` reads the ticket from the tracker `.lanes/lanes.toml` names: a GitHub issue through the `gh` CLI, or, with `tracker = "markdown"` or no config, a file under `.scratch/<feature>/issues/`. A ticket that passes goes from triage to ready: it gets the `ready-for-agent` label and loses `needs-triage` and `needs-info`, while `ready-for-human` and `wontfix` stay. On a markdown ticket, labels are its comma-separated `**Status:**` line. Blocking edges come from GitHub's native issue dependencies, or a markdown ticket's `**Blocked by:**` line or `## Blocked by` section.
 
 Both trackers sit behind the `HostAdapter` port, and `tests/test_host_contract.py` holds them to one contract. It runs against markdown always. To run it against GitHub too, point it at a throwaway repository with the `needs-triage` and `ready-for-agent` labels, where it creates and closes issues: `LANES_GITHUB_SANDBOX=owner/repo uv run pytest tests/test_host_contract.py`.
+
+## Go
+
+`lanes go 42` starts ticket 42's lane. It refuses a ticket that fails `lanes check` or lacks the `ready-for-agent` label, so only tickets you marked ready become prompts. Otherwise it runs `git fetch origin`, because agent view branches the lane's worktree from the cached `origin/HEAD` and without a fetch a lane can start without its blocker's merge. Then it starts `claude --bg --agent implementer --name T42` from the repository root on the model `[models]` in `.lanes/lanes.toml` names for the ticket's tier (Sonnet 5.5 by default). Medium and high lanes get `/mattpocock-skills:implement #42, then write the pull request body with /mattpocock-skills:pr`; small lanes get the ticket text followed by the same `/pr` line; trivial lanes get the ticket text alone. `--route` and `--tier` replace the ticket's own for this lane. Each dispatch appends a `lane_dispatched` record with the route and tier the lane runs at, and the ticket's own when an override replaced them, and maps the lane to its session in the cache.
 
 ## Event log
 

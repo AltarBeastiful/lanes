@@ -2,7 +2,16 @@
 
 from typing import Protocol
 
-from lanes.models import Event, FailureLogged, FailureLoggedV1, FixRound, FixRoundV1, LogRecord
+from lanes.models import (
+    Event,
+    FailureLogged,
+    FailureLoggedV1,
+    FixRound,
+    FixRoundV1,
+    LaneDispatched,
+    LaneDispatchedV1,
+    LogRecord,
+)
 
 
 class LaneStore(Protocol):
@@ -34,4 +43,7 @@ def _upgrade(record: LogRecord) -> Event:
         return FailureLogged(at=record.at, ticket=record.ticket, route=None, tier=None, what=record.what)
     if isinstance(record, FixRoundV1):
         return FixRound(at=record.at, ticket=record.ticket, commit=None)
+    if isinstance(record, LaneDispatchedV1):
+        # No v1 lane was started with an override: `lanes go`, which takes them, logs v2.
+        return LaneDispatched(at=record.at, ticket=record.ticket, route=record.route, tier=record.tier)
     return record

@@ -53,6 +53,25 @@ class TierReviewers(BaseModel):
         return reviewers
 
 
+# The model a lane runs on when `lanes.toml` names none for its tier.
+DEFAULT_MODEL = "claude-sonnet-5-5"
+
+
+class TierModels(BaseModel):
+    """The model each tier's lanes run on."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    trivial: str = DEFAULT_MODEL
+    small: str = DEFAULT_MODEL
+    medium: str = DEFAULT_MODEL
+    high: str = DEFAULT_MODEL
+
+    def for_tier(self, tier: Tier) -> str:
+        model: str = getattr(self, tier)
+        return model
+
+
 class LanesConfig(BaseModel):
     """`.lanes/lanes.toml`, the committed configuration `lanes init` writes."""
 
@@ -66,6 +85,7 @@ class LanesConfig(BaseModel):
     max_lanes: PositiveInt
     codex_allowed: bool
     reviewers: TierReviewers
+    models: TierModels = TierModels()
 
     @model_validator(mode="after")
     def _codex_reviews_only_when_allowed(self) -> Self:
@@ -97,11 +117,25 @@ class _Event(BaseModel):
         return str(int(ticket)) if ticket.isdigit() else ticket
 
 
-class LaneDispatched(_Event):
+class LaneDispatchedV1(_Event):
+    """A lane started, before the event carried the route and tier `--route` and `--tier` overrode."""
+
     event: Literal["lane_dispatched"] = "lane_dispatched"
     version: Literal[1] = 1
     route: Route
     tier: Tier
+
+
+class LaneDispatched(_Event):
+    """A lane started at `route` and `tier`; `ticket_route` and `ticket_tier` are what its ticket named when an
+    override replaced them, None when none did."""
+
+    event: Literal["lane_dispatched"] = "lane_dispatched"
+    version: Literal[2] = 2
+    route: Route
+    tier: Tier
+    ticket_route: Route | None = None
+    ticket_tier: Tier | None = None
 
 
 class FixRoundV1(_Event):
@@ -202,7 +236,8 @@ def _event_tag(record: Any) -> str:
 
 
 LogRecord = Annotated[
-    Annotated[LaneDispatched, Tag("lane_dispatched/1")]
+    Annotated[LaneDispatchedV1, Tag("lane_dispatched/1")]
+    | Annotated[LaneDispatched, Tag("lane_dispatched/2")]
     | Annotated[FixRoundV1, Tag("fix_round/1")]
     | Annotated[FixRound, Tag("fix_round/2")]
     | Annotated[VerdictGiven, Tag("verdict/1")]

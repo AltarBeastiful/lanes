@@ -28,3 +28,9 @@ codex_allowed = {{ config.codex_allowed | toml }}
 {%- for tier, reviewers in config.reviewers %}
 {{ tier }} = {{ reviewers | toml }}
 {%- endfor %}
+
+# The model each tier's lanes run on.
+[models]
+{%- for tier, model in config.models %}
+{{ tier }} = {{ model | toml }}
+{%- endfor %}

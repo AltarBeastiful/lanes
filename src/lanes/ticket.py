@@ -9,6 +9,9 @@ from pydantic_core import ErrorDetails
 
 from lanes.models import TicketLanesSection
 
+# The label `lanes check` puts on a ticket that passes, and the only one `lanes go` dispatches.
+READY = "ready-for-agent"
+
 _HEADING = re.compile(r"^#{2,6} +(.+?)\s*:?\s*$", re.MULTILINE)
 _TOML_BLOCK = re.compile(r"^```toml\s*\n(.*?)^```", re.MULTILINE | re.DOTALL)
 _CHECKBOX = re.compile(r"^[-*] \[[ xX]\] *(.*?)\s*$", re.MULTILINE)

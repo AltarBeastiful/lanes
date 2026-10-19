@@ -180,3 +180,15 @@ def test_report_counts_a_fix_round_logged_before_events_carried_the_commit(lanes
 
     assert result.exit_code == 0, result.output
     assert "T12: 1 fix round, 0 failures" in result.output
+
+
+def test_report_reads_a_lane_dispatched_before_events_carried_overrides(lanes: Lanes, repo: Path) -> None:
+    v1 = {"at": "2026-10-18T09:00:00Z", "ticket": "12", "event": "lane_dispatched", "version": 1, "route": "spec",
+          "tier": "high"}  # fmt: skip
+    state_directory(repo).mkdir(parents=True)
+    (state_directory(repo) / "events.jsonl").write_text(json.dumps(v1) + "\n")
+
+    result = lanes("report")
+
+    assert result.exit_code == 0, result.output
+    assert ("spec", "high") in {tuple(line.split()[:2]) for line in result.output.splitlines()}

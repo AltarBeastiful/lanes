@@ -9,20 +9,19 @@ from typing import Any, get_args
 
 import click
 
-from lanes import install, lock, registry, report as reports, ticket, tick as ticks, timer
+from lanes import go as dispatch, install, lock, registry, report as reports, ticket, tick as ticks, timer
 from lanes.agents import AgentError
 from lanes.agents.claude import ClaudeAgents, workspace_trusted
 from lanes.hosts import HostAdapter, HostError
 from lanes.hosts.github import GitHubHost
 from lanes.hosts.markdown import MarkdownHost
-from lanes.models import FailureLogged, Host, LanesConfig, Reviewer, TierReviewers, Tracker
+from lanes.models import FailureLogged, Host, LanesConfig, Reviewer, Route, Tier, TierReviewers, Tracker
 from lanes.reviewers import ReviewerError
 from lanes.reviewers.local import LocalReviewers
 from lanes.store import LaneStore
 from lanes.store.files import FileStore, state_directory
 
 
-READY = "ready-for-agent"
 # The triage states a ticket leaves when it passes; ready-for-human and wontfix are a person's call and stay.
 TRIAGE = ("needs-triage", "needs-info")
 
@@ -74,13 +73,13 @@ def check(ref: str) -> None:
             click.echo(f"{ref}: {problem}")
         if found:
             sys.exit(1)
-        host.add_label(ref, READY)
+        host.add_label(ref, ticket.READY)
         for label in TRIAGE:
             host.remove_label(ref, label)
     except HostError as error:
         click.echo(f"{ref}: {error}", err=True)
         sys.exit(2)
-    click.echo(f"{ref}: ok, labelled {READY}")
+    click.echo(f"{ref}: ok, labelled {ticket.READY}")
 
 
 @main.command()
@@ -148,6 +147,26 @@ def _tick_here() -> None:
         except (HostError, AgentError, ReviewerError) as error:
             click.echo(f"lanes tick: {error}", err=True)
             sys.exit(2)
+
+
+@main.command()
+@click.argument("ref")
+@click.option("--route", type=click.Choice(get_args(Route)), help="Run the lane at this route instead of the ticket's; logged.")
+@click.option("--tier", type=click.Choice(get_args(Tier)), help="Run the lane at this tier instead of the ticket's; logged.")
+def go(ref: str, route: Route | None, tier: Tier | None) -> None:
+    """Start the lane for ticket REF: fetch origin, then a background session named T<n> with the prompt and model
+    its tier calls for."""
+    config = _config()
+    try:
+        for line in dispatch.start(_host(), _store(), ClaudeAgents(), config, ref, _git_root(), route, tier):
+            click.echo(line)
+    except dispatch.Refused as refused:
+        for reason in refused.args:
+            click.echo(f"{ref}: {reason}")
+        sys.exit(1)
+    except (HostError, AgentError, dispatch.FetchFailed) as error:
+        click.echo(f"{ref}: {error}", err=True)
+        sys.exit(2)
 
 
 @main.command()
