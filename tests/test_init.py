@@ -43,11 +43,11 @@ def home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    bin = tmp_path / "bin"
-    bin.mkdir()
-    (bin / "systemctl").write_text(FAKE_SYSTEMCTL)
-    (bin / "systemctl").chmod(0o755)
-    monkeypatch.setenv("PATH", f"{bin}{os.pathsep}{os.environ['PATH']}")
+    fake_bin = tmp_path / "bin"
+    fake_bin.mkdir()
+    (fake_bin / "systemctl").write_text(FAKE_SYSTEMCTL)
+    (fake_bin / "systemctl").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{fake_bin}{os.pathsep}{os.environ['PATH']}")
     monkeypatch.setenv("FAKE_SYSTEMCTL_LOG", str(tmp_path / "systemctl.log"))
     return home
 
@@ -306,29 +306,33 @@ def test_init_run_again_with_the_same_answers_succeeds(repo: Path, init: Init) -
     assert result.exit_code == 0, result.output
 
 
-def unit(home: Path, name: str) -> str:
-    return (home / ".config" / "systemd" / "user" / name).read_text()
+def unit(home: Path, name: str) -> Path:
+    return home / ".config" / "systemd" / "user" / name
+
+
+def setting(unit_text: str, key: str) -> str:
+    """The value of the one `key=` line in a unit file."""
+    [value] = [line.removeprefix(f"{key}=") for line in unit_text.splitlines() if line.startswith(f"{key}=")]
+    return value
 
 
 def test_init_writes_and_enables_a_timer_that_ticks_every_repository_every_10_minutes(home: Path, init: Init) -> None:
     result = init()
 
     assert result.exit_code == 0, result.output
-    timer = unit(home, "lanes-tick.timer")
+    timer = unit(home, "lanes-tick.timer").read_text()
     assert "OnCalendar=*:0/10" in timer
     assert "WantedBy=timers.target" in timer
-    service = unit(home, "lanes-tick.service")
+    service = unit(home, "lanes-tick.service").read_text()
     assert "Type=oneshot" in service
-    [exec_start] = [line.removeprefix("ExecStart=") for line in service.splitlines() if line.startswith("ExecStart=")]
-    assert shlex.split(exec_start) == [sys.executable, "-m", "lanes", "tick", "--all"]
+    assert shlex.split(setting(service, "ExecStart")) == [sys.executable, "-m", "lanes", "tick", "--all"]
     assert systemctl_calls(home) == ["--user daemon-reload", "--user enable --now lanes-tick.timer"]
 
 
 def test_the_service_runs_lanes_tick_all_with_the_path_init_ran_with(home: Path, init: Init, tmp_path: Path) -> None:
     init()
-    service = unit(home, "lanes-tick.service")
-    [exec_start] = [line.removeprefix("ExecStart=") for line in service.splitlines() if line.startswith("ExecStart=")]
-    [environment] = [line.removeprefix("Environment=") for line in service.splitlines() if line.startswith("Environment=")]
+    service = unit(home, "lanes-tick.service").read_text()
+    exec_start, environment = setting(service, "ExecStart"), setting(service, "Environment")
     empty = tmp_path / "empty-config"
 
     ran = subprocess.run(
@@ -354,4 +358,16 @@ def test_init_warns_and_succeeds_when_systemctl_cannot_enable_the_timer(
     assert result.exit_code == 0, result.output
     assert "timer that runs lanes tick --all is written but not enabled" in result.output
     assert "systemctl --user enable --now lanes-tick.timer" in result.output
-    assert (home / ".config" / "systemd" / "user" / "lanes-tick.timer").is_file()
+    assert unit(home, "lanes-tick.timer").is_file()
+
+
+def test_the_service_keeps_a_dollar_in_the_python_path_from_being_expanded(
+    home: Path, init: Init, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys, "executable", "/opt/$HOME/bin/python")
+
+    init()
+
+    service = unit(home, "lanes-tick.service").read_text()
+    # systemd expands $NAME in ExecStart and reads $$ back as one $.
+    assert shlex.split(setting(service, "ExecStart"))[0] == "/opt/$$HOME/bin/python"

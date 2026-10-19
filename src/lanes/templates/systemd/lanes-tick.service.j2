@@ -6,4 +6,4 @@ Description=Lanes: tick every registered repository
 Type=oneshot
 # The PATH `lanes init` ran with, so the timer finds gh, git and claude where you do.
 Environment={{ path | systemd }}
-ExecStart={{ command | map("systemd") | join(" ") }}
+ExecStart={{ command | map("systemd_command") | join(" ") }}

@@ -7,6 +7,7 @@ Lanes has no orchestrator process, run-state file or lease. Each `tick` re-reads
 - All state access goes through two seams: `HostAdapter` (tickets, edges, contracts, PRs) and `LaneStore` (cache and log). Nothing else reads the state directory or calls the host directly.
 - Moving to beads, plain files in the repo, or a database is a new `HostAdapter` or `LaneStore` implementation, not a rewrite of `tick`. Keep both interfaces small and free of GitHub- or filesystem-specific types so that stays true.
 - The log is the one thing worth migrating, so its events are versioned records, not ad-hoc lines.
+- The one lock is `tick`'s `flock` on `lanes-tick.lock` in the git directory, which keeps two ticks of a repository from racing on git. It is not a lease: it holds no state, and the kernel drops it when the tick exits, however it exits.
 
 ## Considered options
 

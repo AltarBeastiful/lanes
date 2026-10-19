@@ -26,6 +26,7 @@ def units() -> dict[str, str]:
     """The service that ticks every registered repository with this Python's Lanes, and the timer that starts it."""
     environment = jinja2.Environment(undefined=jinja2.StrictUndefined, keep_trailing_newline=True)
     environment.filters["systemd"] = _quoted
+    environment.filters["systemd_command"] = _quoted_command
     service = (TEMPLATES / "lanes-tick.service.j2").read_text(encoding="utf-8")
     return {
         "lanes-tick.service": environment.from_string(service).render(
@@ -59,3 +60,8 @@ def _quoted(word: str) -> str:
     """One word of a unit file's command line or assignment, quoted so systemd reads it back as it is."""
     escaped = word.replace("\\", "\\\\").replace('"', '\\"').replace("%", "%%")
     return f'"{escaped}"'
+
+
+def _quoted_command(word: str) -> str:
+    """One word of `ExecStart`, where systemd also expands `$NAME`, so a `$` is doubled to stay itself."""
+    return _quoted(word.replace("$", "$$"))
