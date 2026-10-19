@@ -21,7 +21,9 @@ import click
 from fixture import FIXTURE, commit_all, git
 from lanes import install
 from lanes.agents.claude import ClaudeAgents, workspace_trusted
+from lanes.hosts.github import GitHubHost
 from lanes.models import LanesConfig, Session, TierReviewers
+from lanes.store.files import FileStore, state_directory
 
 Step = tuple[str, Callable[[], object]]
 
@@ -44,6 +46,15 @@ CONFIG = LanesConfig(
 # Lanes run unattended, so nothing may wait on a permission prompt; the guard still denies config writes.
 SETTINGS = '{\n  "permissions": {\n    "defaultMode": "auto"\n  }\n}\n'
 MODEL = "sonnet"
+
+
+def canned_tickets() -> list[tuple[str, str]]:
+    """Each canned ticket's title and issue body, from `# <title>` and the text after it."""
+    tickets = []
+    for path in sorted(TICKETS.glob("*.md")):
+        heading, body = path.read_text(encoding="utf-8").split("\n", 1)
+        tickets.append((heading.removeprefix("# "), body.strip()))
+    return tickets
 
 
 class Failed(Exception):
@@ -117,11 +128,9 @@ class Smoke:
             self._gh("label", "create", label, "--force", "--repo", self.sandbox)
 
     def open_tickets(self) -> None:
-        for path in sorted(TICKETS.glob("*.md")):
-            heading, body = path.read_text(encoding="utf-8").split("\n", 1)
-            title = heading.removeprefix("# ")
+        for title, body in canned_tickets():
             url = self._gh(
-                "issue", "create", "--title", title, "--body", body.strip(), "--label", "needs-triage", "--repo", self.sandbox
+                "issue", "create", "--title", title, "--body", body, "--label", "needs-triage", "--repo", self.sandbox
             )
             number = url.strip().rsplit("/", 1)[1]
             self.tickets[number] = title
@@ -143,6 +152,9 @@ class Smoke:
             body = self._gh("issue", "view", number, "--json", "body", "--jq", ".body", "--repo", self.sandbox)
             prompt = f"Ticket #{number}: {title}\n\n{body}"
             session = self.agents.dispatch(f"T{number}", "implementer", prompt, MODEL, worktree)
+            # The cache comes before the name when tick looks a lane up, so a T<n> session of another repository
+            # never stands in for this one.
+            FileStore(state_directory(self.repo)).remember_session(number, session)
             print(f"  T{number}: session {session}", flush=True)
 
     def tick(self) -> None:
@@ -162,21 +174,13 @@ class Smoke:
     def _lanes_by_ticket(self) -> dict[str, str]:
         """Each ticket's open pull request, as `<draft|ready> #<n>`; raises when one was handed to a person."""
         found: dict[str, str] = {}
-        listed = self._gh(
-            "pr", "list", "--state", "open", "--json", "number,isDraft,body,labels", "--jq",
-            '.[] | "\\(.number) \\(.isDraft) \\([.labels[].name] | join(",")) \\(.body)"',
-            "--repo", self.sandbox,
-        )  # fmt: skip
-        for line in listed.splitlines():
-            if len(line.split(" ", 3)) < 4:
+        # Through the host, so that a pull request belongs to a ticket exactly when tick thinks it does.
+        for pr in GitHubHost(self.sandbox).pull_requests():
+            if pr.ticket not in self.tickets:
                 continue
-            pr, draft, labels, body = line.split(" ", 3)
-            for number in self.tickets:
-                if f"Closes #{number}" not in body:
-                    continue
-                if "needs-human" in labels.split(","):
-                    raise Failed(f"T{number}'s pull request #{pr} was labelled needs-human")
-                found[number] = f"{'draft' if draft == 'true' else 'ready'} #{pr}"
+            if "needs-human" in pr.labels:
+                raise Failed(f"T{pr.ticket}'s pull request #{pr.ref} was labelled needs-human")
+            found[pr.ticket] = f"{'draft' if pr.draft else 'ready'} #{pr.ref}"
         return found
 
     def keep(self) -> None:
@@ -184,9 +188,9 @@ class Smoke:
 
     def cleanup(self) -> None:
         self.clear()
-        left = [f"session {session.name or session.session_id}" for session in self._sessions()]
-        branches = self._git_heads()
-        left += [f"branch {branch}" for branch in branches if branch != "main"]
+        left = [f"session {session.id or session.session_id}" for session in self._sessions()]
+        left += [f"pull request #{pr}" for pr in self._open_prs()]
+        left += [f"branch {branch}" for branch in self._git_heads() if branch != "main"]
         if left:
             raise Failed(f"left behind: {', '.join(left)}")
 
@@ -198,13 +202,12 @@ class Smoke:
             # Stopping a session that has already exited fails; removing it is what counts.
             subprocess.run(["claude", "stop", short], capture_output=True)
             errors += self._try(["claude", "rm", short])
-        prs = self._gh("pr", "list", "--state", "open", "--json", "number", "--jq", ".[].number", "--repo", self.sandbox)
-        for pr in prs.split():
+        for pr in self._open_prs():
             errors += self._try(["gh", "pr", "close", pr, "--delete-branch", "--repo", self.sandbox])
         for branch in self._git_heads():
             if branch != "main":
                 errors += self._try(["gh", "api", "-X", "DELETE", f"repos/{self.sandbox}/git/refs/heads/{branch}"])
-        titles = {path.read_text(encoding="utf-8").split("\n", 1)[0].removeprefix("# ") for path in TICKETS.glob("*.md")}
+        titles = {title for title, _ in canned_tickets()}
         issues = self._gh(
             "issue", "list", "--state", "open", "--json", "number,title", "--jq", '.[] | "\\(.number) \\(.title)"',
             "--repo", self.sandbox,
@@ -221,14 +224,16 @@ class Smoke:
     def _sessions(self) -> list[Session]:
         return [session for session in self.agents.sessions() if Path(session.cwd).is_relative_to(self.workdir)]
 
+    def _open_prs(self) -> list[str]:
+        return self._gh("pr", "list", "--state", "open", "--json", "number", "--jq", ".[].number", "--repo", self.sandbox).split()
+
     def _git_heads(self) -> list[str]:
         heads = self._run(["git", "ls-remote", "--heads", f"git@github.com:{self.sandbox}.git"], None)
         return [line.split("refs/heads/", 1)[1] for line in heads.splitlines()]
 
     def _lanes(self, *args: str) -> str:
-        """Run this checkout's `lanes` in the sandbox clone, with its state directory under the work directory."""
-        env = {**os.environ, "XDG_STATE_HOME": str(self.workdir / "state")}
-        done = subprocess.run([sys.executable, "-m", "lanes", *args], cwd=self.repo, capture_output=True, text=True, env=env)
+        """Run this checkout's `lanes` in the sandbox clone."""
+        done = subprocess.run([sys.executable, "-m", "lanes", *args], cwd=self.repo, capture_output=True, text=True)
         output = "".join(f"  {line}\n" for line in (done.stdout + done.stderr).splitlines())
         if done.returncode != 0:
             raise Failed(f"lanes {' '.join(args)} exited {done.returncode}:\n{output}")
@@ -266,7 +271,11 @@ class Smoke:
 @click.option("--keep", is_flag=True, help="Leave the sessions, pull requests and branches for a look; the next run clears them.")
 def main(sandbox: str, workdir: Path, timeout: float, interval: float, keep: bool) -> None:
     """Take the fixture's two canned tickets from `check` to a ready pull request with real agents and reviewers."""
-    smoke = Smoke(sandbox, workdir.resolve(), timeout * 60, interval)
+    workdir = workdir.resolve()
+    # The state directory goes under the work directory, for the store here and the `lanes` runs alike, so that it
+    # never mixes with a real repository's and cleanup removes it.
+    os.environ["XDG_STATE_HOME"] = str(workdir / "state")
+    smoke = Smoke(sandbox, workdir, timeout * 60, interval)
     sys.exit(run(smoke.steps(), cleanup=smoke.keep if keep else smoke.cleanup))
 
 
