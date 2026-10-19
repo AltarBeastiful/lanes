@@ -1,0 +1,9 @@
+# Written by `lanes init`; it rewrites this file each time it runs.
+[Unit]
+Description=Lanes: tick every registered repository
+
+[Service]
+Type=oneshot
+# The PATH `lanes init` ran with, so the timer finds gh, git and claude where you do.
+Environment={{ path | systemd }}
+ExecStart={{ command | map("systemd_command") | join(" ") }}

@@ -8,9 +8,10 @@ uv run lanes check 42                      # a GitHub issue, or a markdown ticke
 uv run lanes fail 12 "missed null check"   # log a defect you caught at merge in ticket 12's lane
 uv run lanes report                        # first-pass acceptance, fix rounds and defects, per route and tier
 uv run lanes tick                          # act once on each lane: review, resume, update or mark ready
+uv run lanes tick --all                    # the same in every registered repository, as the timer does
 ```
 
-`lanes init` asks for the host, tracker, test command, lint command, N, whether Codex may read the code and the reviewers per tier. It writes `.lanes/lanes.toml`, `.lanes/hotspots.txt`, the gates and the pytest runner, the implementer and reviewer agents in `.claude/agents/` and their hooks in `.lanes/hooks/`, registers the repository in `~/.config/lanes/repos.toml`, and warns if Claude Code's workspace trust hasn't been accepted for it. It refuses a test command other than pytest. Commit what it wrote under the `allow-config` label, then turn on branch protection requiring `gates` and an up-to-date branch by hand.
+`lanes init` asks for the host, tracker, test command, lint command, N, whether Codex may read the code and the reviewers per tier. It writes `.lanes/lanes.toml`, `.lanes/hotspots.txt`, the gates and the pytest runner, the implementer and reviewer agents in `.claude/agents/` and their hooks in `.lanes/hooks/`, registers the repository in `~/.config/lanes/repos.toml`, writes and enables the systemd user timer that runs `lanes tick --all` every 10 minutes (below), and warns if Claude Code's workspace trust hasn't been accepted for it. It refuses a test command other than pytest. Commit what it wrote under the `allow-config` label, then turn on branch protection requiring `gates` and an up-to-date branch by hand.
 
 ## Tickets
 
@@ -38,6 +39,10 @@ Both trackers sit behind the `HostAdapter` port, and `tests/test_host_contract.p
 - The same, up to date and still a draft: mark it ready for review and ask for your review. GitHub refuses a review request from a pull request's author, so when you wrote it, as lanes running under your `gh` login do, it is assigned to you instead.
 - A pull request labelled `needs-human` by anyone but `tick`: ask you once, with CI's failures or the blocking findings on its head commit. Once a lane has asked, it is left alone, even when someone pushes to it.
 - Anything else: leave the lane alone.
+
+A tick holds a lock in the repository's git directory while it runs, so two ticks of the same repository never overlap: the second says another tick is running and exits without acting.
+
+`lanes tick --all` ticks each repository in `~/.config/lanes/repos.toml` in turn. One that fails (gone, unconfigured, or its host unreachable) is reported and the rest are still ticked; the command then exits 1. `lanes init` writes `lanes-tick.service` and `lanes-tick.timer` to `~/.config/systemd/user/` and runs `systemctl --user enable --now lanes-tick.timer`, so the timer runs `lanes tick --all` every 10 minutes with the Python and `PATH` `lanes init` ran with. Rerun `lanes init` after moving Lanes or the tools it calls. Where systemctl fails, init still succeeds and warns, and the units stay written. Its output goes to the journal: `journalctl --user -u lanes-tick`.
 
 ### Bringing you in
 
